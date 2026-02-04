@@ -1,0 +1,24 @@
+# Don't ignore these folders - they're needed
+!templates/
+!static/
+!templates/**
+!static/**
+
+# Ignore these
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.env
+.venv
+venv/
+ENV/
+uploads/*
+outputs/*
+.DS_Store

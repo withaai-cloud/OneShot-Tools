@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bank Statement Converter - OneShot Tools</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <a href="{{ url_for('index') }}" class="back-link">← Back to Tools</a>
+                <h1>⚡ OneShot Tools</h1>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <div class="container">
+            <div class="tool-header">
+                <div class="tool-icon-large">📊</div>
+                <h2>Bank Statement Converter</h2>
+                <p class="tool-subtitle">Convert PDF bank statements to Excel spreadsheets</p>
+            </div>
+
+            <div class="converter-container">
+                <div class="upload-section">
+                    <form id="uploadForm" enctype="multipart/form-data">
+                        <div class="upload-area" id="uploadArea">
+                            <div class="upload-icon">📁</div>
+                            <h3>Drop PDF files here or click to browse</h3>
+                            <p>You can upload multiple PDF files at once</p>
+                            <input type="file" id="fileInput" name="files[]" accept=".pdf" multiple style="display: none;">
+                            <button type="button" class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">
+                                Select Files
+                            </button>
+                        </div>
+
+                        <div id="fileList" class="file-list"></div>
+
+                        <div class="options-section">
+                            <h4>Conversion Options</h4>
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="invertAmounts" name="invert_amounts">
+                                <span>Invert amounts (positive ↔ negative)</span>
+                            </label>
+                            <p class="option-help">
+                                Check this if you want to flip all amounts from positive to negative or vice versa
+                            </p>
+                        </div>
+
+                        <button type="submit" id="convertBtn" class="btn btn-primary btn-large" disabled>
+                            Convert to Excel
+                        </button>
+                    </form>
+                </div>
+
+                <div id="results" class="results-section" style="display: none;">
+                    <h3>✅ Conversion Complete!</h3>
+                    <div id="resultsContent"></div>
+                </div>
+
+                <div id="loading" class="loading-section" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Processing your files...</p>
+                </div>
+
+                <div id="error" class="error-section" style="display: none;">
+                    <h3>❌ Error</h3>
+                    <p id="errorMessage"></p>
+                    <button class="btn btn-secondary" onclick="location.reload()">Try Again</button>
+                </div>
+            </div>
+
+            <div class="info-section">
+                <h3>How it works</h3>
+                <div class="steps">
+                    <div class="step">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h4>Upload PDF Files</h4>
+                            <p>Select one or multiple PDF bank statements from your computer</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h4>Choose Options</h4>
+                            <p>Optionally invert amounts if needed for your accounting system</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">3</div>
+                        <div class="step-content">
+                            <h4>Download Excel</h4>
+                            <p>Get your converted Excel file(s) with Date, Description, and Amount columns</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="supported-formats">
+                    <h4>Supported Formats</h4>
+                    <p>Currently supports FNB bank statements. More formats coming soon!</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 OneShot Tools. Built for productivity.</p>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/converter.js') }}"></script>
+</body>
+</html>

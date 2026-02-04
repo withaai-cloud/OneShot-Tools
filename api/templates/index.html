@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OneShot Tools - Productivity Tools Suite</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <h1>⚡ OneShot Tools</h1>
+                <p class="tagline">Fast. Simple. Powerful.</p>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <section class="hero">
+            <div class="container">
+                <h2 class="hero-title">Your Productivity Toolkit</h2>
+                <p class="hero-subtitle">A collection of powerful tools to simplify your daily tasks</p>
+            </div>
+        </section>
+
+        <section class="tools-section">
+            <div class="container">
+                <h3 class="section-title">Available Tools</h3>
+                
+                <div class="tools-grid">
+                    <!-- Bank Statement Converter Tool -->
+                    <div class="tool-card">
+                        <div class="tool-icon">📊</div>
+                        <h4 class="tool-title">Bank Statement Converter</h4>
+                        <p class="tool-description">
+                            Convert PDF bank statements to Excel spreadsheets. Extract dates, descriptions, and amounts automatically.
+                        </p>
+                        <div class="tool-features">
+                            <span class="feature-badge">Multiple Files</span>
+                            <span class="feature-badge">Amount Inversion</span>
+                            <span class="feature-badge">Auto-Extract</span>
+                        </div>
+                        <a href="{{ url_for('bank_statement_converter') }}" class="btn btn-primary">
+                            Launch Tool →
+                        </a>
+                    </div>
+
+                    <!-- SA Tax Optimizer Tool -->
+                    <div class="tool-card">
+                        <div class="tool-icon">💰</div>
+                        <h4 class="tool-title">SA Tax Split Optimizer</h4>
+                        <p class="tool-description">
+                            Calculate the optimal split between Individual and SBC tax to minimize your tax liability. Uses 2024/2025 tax brackets.
+                        </p>
+                        <div class="tool-features">
+                            <span class="feature-badge">Tax Savings</span>
+                            <span class="feature-badge">Instant Results</span>
+                            <span class="feature-badge">SA 2024/25</span>
+                        </div>
+                        <a href="{{ url_for('tax_optimizer') }}" class="btn btn-primary">
+                            Launch Tool →
+                        </a>
+                    </div>
+
+                    <!-- Placeholder for future tools -->
+                    <div class="tool-card tool-card-coming-soon">
+                        <div class="tool-icon">🔧</div>
+                        <h4 class="tool-title">More Tools Coming Soon</h4>
+                        <p class="tool-description">
+                            We're constantly adding new tools to help boost your productivity. Stay tuned!
+                        </p>
+                        <div class="coming-soon-badge">Coming Soon</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="features-section">
+            <div class="container">
+                <h3 class="section-title">Why OneShot Tools?</h3>
+                <div class="features-grid">
+                    <div class="feature">
+                        <div class="feature-icon">⚡</div>
+                        <h4>Lightning Fast</h4>
+                        <p>Process your files in seconds, not minutes</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🔒</div>
+                        <h4>Secure & Private</h4>
+                        <p>Your files are processed locally and deleted after conversion</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">💯</div>
+                        <h4>No Sign-Up Required</h4>
+                        <p>Start using tools immediately, no registration needed</p>
+                    </div>
+                    <div class="feature">
+                        <div class="feature-icon">🎯</div>
+                        <h4>Batch Processing</h4>
+                        <p>Handle multiple files at once to save time</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 OneShot Tools. Built for productivity.</p>
+        </div>
+    </footer>
+</body>
+</html>

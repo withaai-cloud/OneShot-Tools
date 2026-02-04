@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SA Tax Split Optimizer - OneShot Tools</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .calculator-container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 40px;
+            max-width: 650px;
+            margin: 0 auto 3rem;
+        }
+        
+        .calc-title {
+            color: #2d3748;
+            margin-bottom: 10px;
+            font-size: 24px;
+            text-align: center;
+        }
+        
+        .calc-subtitle {
+            color: #718096;
+            margin-bottom: 30px;
+            font-size: 14px;
+            text-align: center;
+        }
+        
+        .calc-input-group {
+            margin-bottom: 25px;
+        }
+        
+        .calc-label {
+            display: block;
+            margin-bottom: 8px;
+            color: #4a5568;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        .calc-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        .calc-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .calc-button {
+            width: 100%;
+            padding: 14px;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .calc-button:hover {
+            background: var(--secondary-color);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .calc-button:active {
+            transform: translateY(0);
+        }
+        
+        .calc-results {
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 2px solid #e2e8f0;
+        }
+        
+        .calc-results.hidden {
+            display: none;
+        }
+        
+        .result-card {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+        
+        .result-title {
+            color: #2d3748;
+            font-weight: 600;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+        
+        .result-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        
+        .result-label {
+            color: #718096;
+        }
+        
+        .result-value {
+            color: #2d3748;
+            font-weight: 600;
+        }
+        
+        .total-card {
+            background: linear-gradient(135deg, var(--primary-color) 0%, var(--secondary-color) 100%);
+            color: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        
+        .total-card .result-row {
+            color: white;
+        }
+        
+        .total-card .result-label {
+            color: rgba(255,255,255,0.9);
+        }
+        
+        .total-card .result-value {
+            color: white;
+            font-size: 18px;
+        }
+        
+        .savings-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .savings {
+            background: #48bb78;
+            color: white;
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        
+        .savings-individual {
+            background: #4299e1;
+        }
+        
+        .savings-amount {
+            display: block;
+            font-size: 16px;
+            margin-top: 4px;
+        }
+        
+        @media (max-width: 768px) {
+            .savings-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <a href="{{ url_for('index') }}" class="back-link">← Back to Tools</a>
+                <h1>⚡ OneShot Tools</h1>
+            </div>
+        </div>
+    </nav>
+
+    <main class="main-content">
+        <div class="container">
+            <div class="tool-header">
+                <div class="tool-icon-large">💰</div>
+                <h2>SA Tax Split Optimizer</h2>
+                <p class="tool-subtitle">Calculate the optimal split between Individual and SBC tax to minimize your tax liability</p>
+            </div>
+
+            <div class="calculator-container">
+                <div class="calc-input-group">
+                    <label for="totalIncome" class="calc-label">Total Income (R)</label>
+                    <input type="number" id="totalIncome" class="calc-input" placeholder="Enter total income" min="0" step="1000">
+                </div>
+                
+                <button class="calc-button" onclick="calculateOptimalSplit()">Calculate Optimal Split</button>
+                
+                <div id="results" class="calc-results hidden">
+                    <div class="result-card">
+                        <div class="result-title">Individual Tax</div>
+                        <div class="result-row">
+                            <span class="result-label">Income Amount:</span>
+                            <span class="result-value" id="individualIncome">R 0</span>
+                        </div>
+                        <div class="result-row">
+                            <span class="result-label">Tax Payable:</span>
+                            <span class="result-value" id="individualTax">R 0</span>
+                        </div>
+                    </div>
+                    
+                    <div class="result-card">
+                        <div class="result-title">SBC Tax</div>
+                        <div class="result-row">
+                            <span class="result-label">Income Amount:</span>
+                            <span class="result-value" id="sbcIncome">R 0</span>
+                        </div>
+                        <div class="result-row">
+                            <span class="result-label">Tax Payable:</span>
+                            <span class="result-value" id="sbcTax">R 0</span>
+                        </div>
+                    </div>
+                    
+                    <div class="total-card">
+                        <div class="result-row">
+                            <span class="result-label">Total Tax Payable:</span>
+                            <span class="result-value" id="totalTax">R 0</span>
+                        </div>
+                        <div class="result-row">
+                            <span class="result-label">Effective Tax Rate:</span>
+                            <span class="result-value" id="effectiveRate">0%</span>
+                        </div>
+                    </div>
+                    
+                    <div class="savings-container">
+                        <div class="savings savings-individual">
+                            <div>vs All Individual Tax</div>
+                            <span class="savings-amount" id="savingsIndividual">R 0</span>
+                        </div>
+                        <div class="savings">
+                            <div>vs All SBC Tax</div>
+                            <span class="savings-amount" id="savingsSBC">R 0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="info-section">
+                <h3>About the Tax Split Optimizer</h3>
+                <div class="steps">
+                    <div class="step">
+                        <div class="step-number">1</div>
+                        <div class="step-content">
+                            <h4>Enter Your Total Income</h4>
+                            <p>Input your total annual income from all sources</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">2</div>
+                        <div class="step-content">
+                            <h4>Automatic Optimization</h4>
+                            <p>Our calculator tests thousands of combinations to find the optimal split</p>
+                        </div>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">3</div>
+                        <div class="step-content">
+                            <h4>View Your Savings</h4>
+                            <p>See how much you can save compared to single tax structure</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="supported-formats">
+                    <h4>Tax Information</h4>
+                    <p><strong>Individual Tax:</strong> Uses 2024/2025 SA individual tax brackets with tax-free threshold of R237,100</p>
+                    <p><strong>SBC Tax:</strong> Small Business Corporation tax with R95,750 tax-free threshold and progressive rates</p>
+                    <p style="margin-top: 10px; font-size: 0.9em; color: #718096;">
+                        <em>Note: This calculator provides estimates for planning purposes. Consult with a tax professional for specific advice.</em>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 OneShot Tools. Built for productivity.</p>
+        </div>
+    </footer>
+
+    <script>
+        // 2024/2025 SA Individual Tax Brackets
+        function calculateIndividualTax(income) {
+            if (income <= 237100) return 0;
+            if (income <= 370500) return (income - 237100) * 0.18;
+            if (income <= 512800) return 24012 + (income - 370500) * 0.26;
+            if (income <= 673000) return 61010 + (income - 512800) * 0.31;
+            if (income <= 857900) return 110672 + (income - 673000) * 0.36;
+            if (income <= 1817000) return 177236 + (income - 857900) * 0.39;
+            return 551196 + (income - 1817000) * 0.45;
+        }
+        
+        // SBC Tax Brackets (0% up to R95,750, then graduated rates)
+        function calculateSBCTax(income) {
+            if (income <= 95750) return 0;
+            if (income <= 365000) return (income - 95750) * 0.07;
+            if (income <= 550000) return 18847.50 + (income - 365000) * 0.21;
+            return 57697.50 + (income - 550000) * 0.27;
+        }
+        
+        function formatCurrency(amount) {
+            return 'R ' + amount.toLocaleString('en-ZA', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        
+        function calculateOptimalSplit() {
+            const totalIncome = parseFloat(document.getElementById('totalIncome').value);
+            
+            if (!totalIncome || totalIncome <= 0) {
+                alert('Please enter a valid income amount');
+                return;
+            }
+            
+            let optimalIndividual = 0;
+            let optimalSBC = totalIncome;
+            let minTotalTax = calculateIndividualTax(0) + calculateSBCTax(totalIncome);
+            
+            // Try different splits in increments
+            const increment = 1000;
+            for (let individualAmount = 0; individualAmount <= totalIncome; individualAmount += increment) {
+                const sbcAmount = totalIncome - individualAmount;
+                const individualTax = calculateIndividualTax(individualAmount);
+                const sbcTax = calculateSBCTax(sbcAmount);
+                const totalTax = individualTax + sbcTax;
+                
+                if (totalTax < minTotalTax) {
+                    minTotalTax = totalTax;
+                    optimalIndividual = individualAmount;
+                    optimalSBC = sbcAmount;
+                }
+            }
+            
+            // Fine-tune around the optimal point
+            const searchRange = increment * 2;
+            for (let individualAmount = Math.max(0, optimalIndividual - searchRange); 
+                 individualAmount <= Math.min(totalIncome, optimalIndividual + searchRange); 
+                 individualAmount += 100) {
+                const sbcAmount = totalIncome - individualAmount;
+                const individualTax = calculateIndividualTax(individualAmount);
+                const sbcTax = calculateSBCTax(sbcAmount);
+                const totalTax = individualTax + sbcTax;
+                
+                if (totalTax < minTotalTax) {
+                    minTotalTax = totalTax;
+                    optimalIndividual = individualAmount;
+                    optimalSBC = sbcAmount;
+                }
+            }
+            
+            const optimalIndividualTax = calculateIndividualTax(optimalIndividual);
+            const optimalSBCTax = calculateSBCTax(optimalSBC);
+            const totalTax = optimalIndividualTax + optimalSBCTax;
+            const effectiveRate = (totalTax / totalIncome) * 100;
+            
+            // Calculate tax if all income was individual or all SBC
+            const allIndividualTax = calculateIndividualTax(totalIncome);
+            const allSBCTax = calculateSBCTax(totalIncome);
+            const savingsVsIndividual = allIndividualTax - totalTax;
+            const savingsVsSBC = allSBCTax - totalTax;
+            
+            // Display results
+            document.getElementById('individualIncome').textContent = formatCurrency(optimalIndividual);
+            document.getElementById('individualTax').textContent = formatCurrency(optimalIndividualTax);
+            document.getElementById('sbcIncome').textContent = formatCurrency(optimalSBC);
+            document.getElementById('sbcTax').textContent = formatCurrency(optimalSBCTax);
+            document.getElementById('totalTax').textContent = formatCurrency(totalTax);
+            document.getElementById('effectiveRate').textContent = effectiveRate.toFixed(2) + '%';
+            
+            // Display savings
+            document.getElementById('savingsIndividual').textContent = formatCurrency(savingsVsIndividual);
+            document.getElementById('savingsSBC').textContent = formatCurrency(savingsVsSBC);
+            
+            document.getElementById('results').classList.remove('hidden');
+        }
+        
+        // Allow Enter key to calculate
+        document.getElementById('totalIncome').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                calculateOptimalSplit();
+            }
+        });
+    </script>
+</body>
+</html>
