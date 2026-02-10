@@ -266,10 +266,11 @@ def convert():
         # Process all files
         output_files = []
         all_transactions = []
+        file_data = {}  # Store file data in memory
         
         for file in files:
             if file and file.filename.endswith('.pdf'):
-                # Save uploaded file
+                # Save uploaded file temporarily
                 filename = file.filename
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
@@ -278,10 +279,51 @@ def convert():
                 transactions = extract_transactions_from_pdf(filepath, invert_amounts)
                 all_transactions.extend(transactions)
                 
-                # Create Excel file
+                # Create Excel file in memory
                 output_filename = filename.replace('.pdf', '_transactions.xlsx')
-                output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
-                create_excel_file(transactions, output_path)
+                
+                # Create workbook
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Bank Statement"
+                
+                # Headers
+                headers = ['Date', 'Description', 'Amount']
+                header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
+                header_font = Font(bold=True, color='FFFFFF', size=12)
+                
+                for col_num, header in enumerate(headers, 1):
+                    cell = ws.cell(row=1, column=col_num, value=header)
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
+                
+                # Data
+                for row_num, transaction in enumerate(transactions, 2):
+                    ws.cell(row=row_num, column=1, value=transaction['Date'])
+                    ws.cell(row=row_num, column=2, value=transaction['Description'])
+                    
+                    amount_str = transaction['Amount'].replace(',', '')
+                    try:
+                        amount_num = float(amount_str)
+                        cell = ws.cell(row=row_num, column=3, value=amount_num)
+                        cell.number_format = '#,##0.00'
+                    except:
+                        ws.cell(row=row_num, column=3, value=transaction['Amount'])
+                
+                # Column widths
+                ws.column_dimensions['A'].width = 12
+                ws.column_dimensions['B'].width = 50
+                ws.column_dimensions['C'].width = 15
+                
+                # Save to BytesIO
+                excel_buffer = BytesIO()
+                wb.save(excel_buffer)
+                excel_buffer.seek(0)
+                
+                # Store in memory
+                import base64
+                file_data[output_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
                 
                 output_files.append({
                     'original': filename,
@@ -294,23 +336,60 @@ def convert():
         
         # If multiple files, create a combined Excel and a ZIP
         if len(output_files) > 1:
-            # Create combined Excel
+            # Create combined Excel in memory
             combined_filename = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-            combined_path = os.path.join(app.config['OUTPUT_FOLDER'], combined_filename)
-            create_excel_file(all_transactions, combined_path)
             
-            # Create ZIP file with all outputs
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Bank Statement"
+            
+            headers = ['Date', 'Description', 'Amount']
+            header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
+            header_font = Font(bold=True, color='FFFFFF', size=12)
+            
+            for col_num, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col_num, value=header)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            for row_num, transaction in enumerate(all_transactions, 2):
+                ws.cell(row=row_num, column=1, value=transaction['Date'])
+                ws.cell(row=row_num, column=2, value=transaction['Description'])
+                
+                amount_str = transaction['Amount'].replace(',', '')
+                try:
+                    amount_num = float(amount_str)
+                    cell = ws.cell(row=row_num, column=3, value=amount_num)
+                    cell.number_format = '#,##0.00'
+                except:
+                    ws.cell(row=row_num, column=3, value=transaction['Amount'])
+            
+            ws.column_dimensions['A'].width = 12
+            ws.column_dimensions['B'].width = 50
+            ws.column_dimensions['C'].width = 15
+            
+            excel_buffer = BytesIO()
+            wb.save(excel_buffer)
+            excel_buffer.seek(0)
+            
+            import base64
+            file_data[combined_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
+            
+            # Create ZIP in memory
             zip_filename = f'all_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
-            zip_path = os.path.join(app.config['OUTPUT_FOLDER'], zip_filename)
+            zip_buffer = BytesIO()
             
-            with zipfile.ZipFile(zip_path, 'w') as zipf:
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
                 # Add combined file
-                zipf.write(combined_path, combined_filename)
+                zipf.writestr(combined_filename, base64.b64decode(file_data[combined_filename]))
                 
                 # Add individual files
                 for output_file in output_files:
-                    file_path = os.path.join(app.config['OUTPUT_FOLDER'], output_file['output'])
-                    zipf.write(file_path, output_file['output'])
+                    zipf.writestr(output_file['output'], base64.b64decode(file_data[output_file['output']]))
+            
+            zip_buffer.seek(0)
+            file_data[zip_filename] = base64.b64encode(zip_buffer.read()).decode('utf-8')
             
             return jsonify({
                 'success': True,
@@ -318,7 +397,8 @@ def convert():
                 'files': output_files,
                 'combined': combined_filename,
                 'zip': zip_filename,
-                'total_transactions': len(all_transactions)
+                'total_transactions': len(all_transactions),
+                'file_data': file_data  # Send file data directly
             })
         else:
             # Single file
@@ -326,11 +406,13 @@ def convert():
                 'success': True,
                 'multiple': False,
                 'file': output_files[0]['output'],
-                'transactions': output_files[0]['transactions']
+                'transactions': output_files[0]['transactions'],
+                'file_data': file_data  # Send file data directly
             })
             
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 @app.route('/download/<filename>')
 def download(filename):
