@@ -157,9 +157,15 @@ def extract_transactions_from_pdf(pdf_path, invert_amounts=False):
                         # Apply inversion if requested
                         if invert_amounts:
                             try:
+                                # Remove commas and convert to float
                                 amount_val = float(amount_clean.replace(',', ''))
+                                # Invert the sign
                                 amount_val = -amount_val
-                                amount_clean = str(amount_val)
+                                # Format with commas
+                                if amount_val >= 0:
+                                    amount_clean = f"{amount_val:,.2f}"
+                                else:
+                                    amount_clean = f"-{abs(amount_val):,.2f}"
                             except:
                                 pass
                         
@@ -260,8 +266,12 @@ def convert():
         if not files or files[0].filename == '':
             return jsonify({'error': 'No files selected'}), 400
         
-        # Get invert option
-        invert_amounts = request.form.get('invert_amounts') == 'true'
+        # Get invert option - FormData sends boolean as string
+        invert_amounts_str = request.form.get('invert_amounts', 'false')
+        invert_amounts = invert_amounts_str.lower() == 'true'
+        
+        # Debug: log the invert setting
+        print(f"DEBUG: invert_amounts_str = '{invert_amounts_str}', invert_amounts = {invert_amounts}")
         
         # Process all files
         output_files = []
