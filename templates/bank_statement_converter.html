@@ -41,6 +41,21 @@
 
                         <div class="options-section">
                             <h4>Conversion Options</h4>
+                            
+                            <div class="option-group">
+                                <label class="option-label">Output Format:</label>
+                                <div class="radio-group">
+                                    <label class="radio-label">
+                                        <input type="radio" id="formatExcel" name="output_format" value="excel" checked>
+                                        <span>Excel (.xlsx)</span>
+                                    </label>
+                                    <label class="radio-label">
+                                        <input type="radio" id="formatCSV" name="output_format" value="csv">
+                                        <span>CSV (.csv)</span>
+                                    </label>
+                                </div>
+                            </div>
+                            
                             <label class="checkbox-label">
                                 <input type="checkbox" id="invertAmounts" name="invert_amounts">
                                 <span>Invert amounts (positive ↔ negative)</span>
@@ -51,7 +66,7 @@
                         </div>
 
                         <button type="submit" id="convertBtn" class="btn btn-primary btn-large" disabled>
-                            Convert to Excel
+                            <span id="convertBtnText">Convert to Excel</span>
                         </button>
                     </form>
                 </div>
@@ -93,15 +108,18 @@
                     <div class="step">
                         <div class="step-number">3</div>
                         <div class="step-content">
-                            <h4>Download Excel</h4>
-                            <p>Get your converted Excel file(s) with Date, Description, and Amount columns</p>
+                            <h4>Download File</h4>
+                            <p>Get your converted Excel or CSV file(s) with Date, Description, and Amount columns</p>
                         </div>
                     </div>
                 </div>
 
                 <div class="supported-formats">
-                    <h4>Supported Formats</h4>
-                    <p>Currently supports FNB bank statements. More formats coming soon!</p>
+                    <h4>Supported Banks</h4>
+                    <p><strong>✅ FNB</strong> - First National Bank</p>
+                    <p><strong>✅ ABSA</strong> - Absa Bank</p>
+                    <p><strong>✅ Standard Bank</strong> - Standard Bank of South Africa</p>
+                    <p style="margin-top: 10px; font-size: 0.9em;">Bank format automatically detected from PDF</p>
                 </div>
             </div>
         </div>

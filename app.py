@@ -8,12 +8,13 @@ from flask import Flask, render_template, request, send_file, jsonify, send_from
 import os
 import sys
 import re
+import csv
 import pypdfium2 as pdfium
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 import zipfile
-from io import BytesIO
+from io import BytesIO, StringIO
 
 # Get the absolute path of the current file
 basedir = os.path.abspath(os.path.dirname(__file__))
@@ -58,7 +59,555 @@ app.config['OUTPUT_FOLDER'] = tempfile.gettempdir()
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
 
+def decode_absa_text(text):
+    """Decode garbled ABSA PDF text to readable characters"""
+    char_map = {
+        # Digits
+        'ð': '0', 'ñ': '1', 'ò': '2', 'ó': '3', 'ô': '4',
+        'õ': '5', 'ö': '6', '÷': '7', 'ø': '8', 'ù': '9',
+        
+        # Special characters
+        'a': '/', 'k': '.', 'K': '.', '@': ' ', '`': '-', 'z': ':',
+        '\\': '*', 'm': 'j',
+        
+        # Control characters (0x80-0x9F range) - lowercase letters
+        '\x81': 'a',
+        '\x82': 'b',
+        '\x83': 'c',
+        '\x84': 'o',
+        '\x85': 'e',
+        '\x86': 'i',
+        '\x87': 'g',
+        '\x88': 'h',
+        '\x89': 'i',
+        '\x8a': 'j',
+        '\x8b': 'k',
+        '\x8c': 'w',
+        '\x8d': 'd',
+        '\x8e': 'f',
+        '\x8f': 'p',
+        '\x90': 'v',
+        '\x91': 'm',
+        '\x92': 'a',
+        '\x93': 'r',
+        '\x94': 's',
+        '\x95': 'n',
+        '\x96': 'u',
+        '\x97': 'y',
+        '\x98': 'l',
+        '\x99': 'r',
+        
+        # Uppercase letters
+        'Á': 'A', 'Â': 'B', 'Ã': 'C', 'Ä': 'D', 'Å': 'E',
+        'Æ': 'F', 'Ç': 'G', 'È': 'H', 'É': 'I', 'Ê': 'J',
+        'Ë': 'K', 'Ì': 'L', 'Í': 'M', 'Î': 'N', 'Ï': 'O',
+        'Ñ': 'P', 'Ò': 'Q', 'Ó': 'R', 'Ô': 'S', 'Õ': 'T',
+        'Ö': 'U', '×': 'V', 'Ø': 'W', 'Ù': 'X', 'Ú': 'Y', 'Û': 'Z',
+        
+        # Lowercase letters (extended ASCII)
+        'â': 'S', 'ã': 'T', 'å': 'W', 'æ': 'H', 'ç': 'N', 'è': 'Y',
+        '¢': 'e', '£': 't', '¤': 'a', '¥': 'r', '¦': 'w', '§': 'x',
+        '¨': 'n', '©': 'o', 'ª': 'i', '«': 'u', '¬': 's', '­': 'd',
+        '®': 'l', '¯': 'c', '°': 'f', '±': 'h', '²': 'm', '³': 'p',
+        '´': 'g', 'µ': 'b', '¶': 'v', '·': 'k', '¸': 'x', '¹': 'j',
+        'º': 'q', '»': 'z',
+    }
+    
+    result = ''
+    for char in text:
+        result += char_map.get(char, char)
+    return result
+
+def detect_bank_format(text):
+    """Detect if the statement is from FNB, ABSA, or Standard Bank"""
+    if 'ABSA' in text.upper() or 'Absa Bank' in text:
+        return 'ABSA'
+    elif 'STANDARD BANK' in text.upper():
+        return 'STANDARD_BANK'
+    elif 'FNB' in text.upper() or 'First National Bank' in text:
+        return 'FNB'
+    # Default to FNB if unclear
+    return 'FNB'
+
+def extract_transactions_from_absa(pdf_path, invert_amounts=False):
+    """Extract transaction data from ABSA bank statement PDF"""
+    
+    transactions = []
+    statement_year = None
+    
+    # Open the PDF
+    pdf = pdfium.PdfDocument(pdf_path)
+    
+    # Combine all pages into one text block to handle cross-page continuations
+    all_text = []
+    for page_num in range(len(pdf)):
+        page = pdf[page_num]
+        textpage = page.get_textpage()
+        text = textpage.get_text_range()
+        
+        # Decode the garbled text
+        text = decode_absa_text(text)
+        
+        # Extract year from statement period (first page only)
+        if page_num == 0 and not statement_year:
+            year_match = re.search(r'(\d{1,2})\s+\w+\s+(\d{4})\s+to', text)
+            if year_match:
+                statement_year = year_match.group(2)
+        
+        all_text.append(text)
+    
+    # Join all pages with a special marker so we know where page breaks are
+    combined_text = '\n'.join(all_text)
+    lines = combined_text.split('\n')
+    
+    # Look for transaction lines
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # ABSA date pattern: DD/MM/YYYY at start of line
+        date_pattern = r'^(\d{1,2}/\d{2}/\d{4})\s+'
+        
+        match = re.match(date_pattern, line)
+        if match:
+            date_str = match.group(1)
+            
+            # Extract the rest of the line after the date
+            remainder = line[len(date_str):].strip()
+            
+            # Get description (everything before the amounts)
+            description_parts = []
+            
+            # First part of description is on this line
+            desc_match = re.match(r'^([A-Za-z\s:]+)', remainder)
+            if desc_match:
+                description_parts.append(desc_match.group(1).strip())
+            
+            # Check for continuation lines (can cross page boundaries!)
+            j = i + 1
+            continuation_count = 0
+            consecutive_non_continuation = 0
+            max_continuations = 10
+            
+            while j < len(lines) and continuation_count < max_continuations:
+                next_line = lines[j].strip()
+                
+                # Stop if it's a new date line
+                if re.match(date_pattern, next_line):
+                    break
+                
+                # Stop if it's empty
+                if not next_line:
+                    j += 1
+                    consecutive_non_continuation += 1
+                    if consecutive_non_continuation > 30:  # Too many empty lines
+                        break
+                    continue
+                
+                # Check if line contains descriptive text
+                has_text = re.search(r'[A-Za-z]{3,}', next_line)
+                
+                if has_text:
+                    # Filter out metadata/header/footer lines
+                    if any(kw in next_line for kw in ['Charge Statement Detail', 'Se Ttiine', 'MEiiectire', 'Cheae accant', 'Cheae Accant', 'YUäX VXICITG', 'SIXAC', 'QRIV STXEET', 'WXYHEID', '41-0214-4229', '197', '3100', 'Xetarn aooreee', 'Accant Tne', 'Stateent n', 'WAT reg n', 'Urerorait', 'Deecritin Charge Debit Aant', 'Ieeaeo', 'VXICITG VRAT', 'ITTEXEST XATE', 'ITCRäDED', 'CHAXGE:', 'ADSITISTXATIUT', 'CASH DEVUSIT', 'SINED', 'SEXWICE', 'TXATSACTIUT', 'Date Traneactin', 'SVXUVE', 'Bana Riiteo', 'Aathrieeo Financia', 'Xegietereo Creoit', 'Xegietratin Taber', 'CSV001CW', 'traneactine Mcntinaeo', 'Vage', 'Tax Inrice', 'eSt/jp', 'Gener/l Enquiries', '08600', 'Uar Vriracn', 'Wieit abea', 'Baance', 'Accant Saarn', 'Yar traneactine']):
+                        # Metadata - skip and increment non-continuation counter
+                        consecutive_non_continuation += 1
+                        # If we've hit too many non-continuation lines, stop
+                        if consecutive_non_continuation > 10:
+                            break
+                        j += 1
+                        continue
+                    else:
+                        # Real continuation line
+                        description_parts.append(next_line)
+                        continuation_count += 1
+                        consecutive_non_continuation = 0  # Reset counter
+                        
+                        # Stop if this line ends with a known ending pattern
+                        # Date patterns: "5 Aug", "5 March", "5 Sept", location names, etc.
+                        if re.search(r'(Njala|Garage|Holland\d+|\d+\s+(Aag|Aug|March|Sarch|Sept|Pa|Jan|Feb|Apr|May|Jun|Jul|Oct|Nov|Dec|Paye))$', next_line.strip(), re.IGNORECASE):
+                            # This is the end of the description
+                            j += 1
+                            break
+                    j += 1
+                else:
+                    # No text
+                    consecutive_non_continuation += 1
+                    if consecutive_non_continuation > 10:
+                        break
+                    j += 1
+            
+            # Update index to skip processed continuation lines
+            i = j - 1
+            
+            # Combine description parts
+            description = ' '.join(description_parts)
+            
+            # Clean up description
+            description = description.replace('Setteent', 'Settlement')
+            description = description.replace('Heaoiiice', 'Headoffice')
+            description = description.replace('Archire', 'Archive')
+            description = description.replace('Ttiiic', 'Notific')
+            description = description.replace('Ttiine', 'Notifyme')
+            description = description.replace('Vanent', 'Payment')
+            description = description.replace('Vane ', 'Payee ')
+            description = description.replace('Tranei', 'Transf')
+            description = description.replace('Varchaee', 'Purchase')
+            description = description.replace('Creoit', 'Credit')
+            description = description.replace('Externa', 'External')
+            description = description.replace('Digita', 'Digital')
+            description = description.replace('Snthn', 'Monthly')
+            description = description.replace('Traneactin', 'Transaction')
+            description = description.replace('Aoin', 'Admin')
+            description = description.replace('Vri Ui Vt Eai', 'Proof Of Pmt Email')
+            description = description.replace('Ve', 'Pos')
+            description = description.replace('Haro', 'Holland')
+            description = description.replace('Heebanajii', 'Holland')
+            description = description.replace('Eto', 'Edo')
+            description = description.replace('Ba Braght Frwaro', 'Bal Brought Forward')
+            description = description.replace('Abea Bana', 'Absa Bank')
+            description = description.replace('Sare', 'Sars')
+            description = description.replace('Stars', 'Sars')
+            description = description.replace('Traneier', 'Transfer')
+            description = description.replace('Sarch', 'March')
+            description = description.replace('Aag', 'Aug')
+            description = description.replace('Uct', 'Oct')
+            description = description.replace('Pan', 'Jan')  # Fixed: Pan -> Jan
+            description = description.replace('Caro T.', 'Card No.')
+            description = description.replace('Caro ', 'Card ')
+            description = description.replace('Stegene', 'Stegens')
+            description = description.replace('Stegen ', 'Stegens ')
+            description = description.replace('Wrnhe', 'Vryhe')
+            description = description.replace('Vryheio', 'Vryheid')
+            description = description.replace('MEii', 'Vyh')
+            description = description.replace('Stateent Detai', 'Statement Detail')
+            description = description.replace('Tmaa', 'Njala')
+            description = description.replace('Hbane', 'Hlobane')
+            description = description.replace('Deetiart', 'Desti')
+            description = description.replace('Vara', 'Park')
+            description = description.replace('Santa', 'Santam')
+            description = description.replace('Qieeie', 'Kommissie')
+            description = description.replace('Saio', 'Suid')
+            description = description.replace('äitanoer', 'Uitlander')
+            
+            # Complex merchant name fixes
+            description = description.replace('Sagg Ano Bean', 'Mugg And Bean')
+            description = description.replace('Sar Goen Posaa', 'Spur Golden Peak')  # Fixed
+            description = description.replace('Siririer Cnre', 'Mooirivier Conve')
+            description = description.replace('Sirrier Cnre', 'Mooirivier Conve')
+            description = description.replace('Vtch', 'Potch')
+            description = description.replace('Hhee', 'Wheel')
+            description = description.replace('Chain Wheel  P  Tyr', 'Champion Wheel & Tyr')
+            description = description.replace('Tnr', 'Tyr')
+            description = description.replace('Sirac Vr', 'Mirac Prop')
+            
+            # Bank/Digital payment specific fixes
+            description = description.replace('Cat 5 Dec', 'Comput 5 Dec')  # Fixed: Cat -> Comput
+            description = description.replace('Cat 5 March', 'Comput 5 March')
+            description = description.replace('Cat 4 Set', 'Comput 4 Sept')
+            
+            # Bank name fixes - order matters!
+            description = description.replace('Holland85344807104', 'Wesbank_fi85344807104')
+            description = description.replace('Ribertn', 'Liberty')
+            
+            # Find ALL amounts in the line
+            amount_pattern = r'(\d{1,3}(?:[\s,]\d{3})*\.\d{2})'
+            all_amounts = re.findall(amount_pattern, line)
+            
+            # Clean amounts
+            all_amounts = [a.replace(' ', ',') for a in all_amounts]
+            
+            # CRITICAL: Column structure is:
+            # Charge (col 3) | Debit (col 4) | Credit (col 5) | Balance (col 6)
+            
+            final_amount = None
+            
+            if len(all_amounts) == 0:
+                # No amounts - skip
+                i += 1
+                continue
+                
+            elif len(all_amounts) == 1:
+                # Only balance - skip (no debit or credit)
+                i += 1
+                continue
+                
+            elif len(all_amounts) == 2:
+                # Two amounts: Could be:
+                # 1. Charge + Balance (has A or T marker) - SKIP
+                # 2. Debit + Balance (has * marker or no marker) - EXTRACT as negative
+                # 3. Credit + Balance (Transf/Transfer in description) - EXTRACT as positive
+                
+                # Check if line has asterisk (bank charges) - these are debits
+                if '*' in line:
+                    # Bank charge: Debit + Balance - extract first as negative
+                    final_amount = '-' + all_amounts[0]
+                # Check if this is a credit transaction (Transfer/Credit without charge)
+                elif 'Credit' in description or 'Deposit' in description or 'Transf' in description or 'Transfer' in description:
+                    # Credit + Balance - extract first amount as positive
+                    final_amount = all_amounts[0]  # Positive
+                # Check if line has charge indicator (A or T)
+                elif ' A ' in line or ' T ' in line:
+                    # Charge + Balance - skip
+                    i += 1
+                    continue
+                else:
+                    # Debit + Balance (no marker) - extract as negative
+                    final_amount = '-' + all_amounts[0]
+                    
+            elif len(all_amounts) == 3:
+                # Charge + Debit/Credit + Balance
+                # Example: 15.00 T 944.27 342,616.71
+                # Middle amount (index 1) is the debit or credit
+                transaction_amount = all_amounts[1]
+                
+                # Determine if it's debit (negative) or credit (positive)
+                if 'Credit' in description or 'Deposit' in description:
+                    final_amount = transaction_amount  # Positive
+                else:
+                    final_amount = '-' + transaction_amount  # Negative
+                    
+            elif len(all_amounts) >= 4:
+                # Rare case: might have multiple amounts
+                # Assume second-to-last is transaction, last is balance
+                transaction_amount = all_amounts[-2]
+                
+                if 'Credit' in description or 'Deposit' in description:
+                    final_amount = transaction_amount  # Positive
+                else:
+                    final_amount = '-' + transaction_amount  # Negative
+            
+            # Skip if no valid transaction amount
+            if not final_amount:
+                i += 1
+                continue
+            
+            # Skip balance brought forward
+            if 'Brought Forward' in description or 'Braght Frwaro' in description:
+                i += 1
+                continue
+            
+            if description.strip():
+                # Apply inversion if requested
+                if invert_amounts:
+                    try:
+                        amount_val = float(final_amount.replace(',', ''))
+                        amount_val = -amount_val
+                        if amount_val >= 0:
+                            final_amount = f"{amount_val:,.2f}"
+                        else:
+                            final_amount = f"-{abs(amount_val):,.2f}"
+                    except:
+                        pass
+                
+                transactions.append({
+                    'Date': date_str,
+                    'Description': description.strip(),
+                    'Amount': final_amount
+                })
+        
+        i += 1
+    
+    return transactions
+
 def extract_transactions_from_pdf(pdf_path, invert_amounts=False):
+    """Extract transaction data from bank statement PDF (supports FNB, ABSA, and Standard Bank)"""
+    
+    # Read first page to detect bank format
+    pdf = pdfium.PdfDocument(pdf_path)
+    page = pdf[0]
+    textpage = page.get_textpage()
+    text = textpage.get_text_range()
+    
+    bank_format = detect_bank_format(text)
+    
+    if bank_format == 'ABSA':
+        return extract_transactions_from_absa(pdf_path, invert_amounts)
+    elif bank_format == 'STANDARD_BANK':
+        return extract_transactions_from_standard_bank(pdf_path, invert_amounts)
+    else:
+        return extract_transactions_from_fnb(pdf_path, invert_amounts)
+
+def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False):
+    """Extract transaction data from Standard Bank statement PDF"""
+    
+    transactions = []
+    statement_end_year = None
+    statement_start_month = None
+    statement_end_month = None
+    
+    # Open the PDF
+    pdf = pdfium.PdfDocument(pdf_path)
+    
+    # Combine all pages
+    all_text = []
+    for page_num in range(len(pdf)):
+        page = pdf[page_num]
+        textpage = page.get_textpage()
+        text = textpage.get_text_range()
+        
+        # Extract year and month range from first page
+        if page_num == 0:
+            # Look for "From: 30 Oct 25" and "To: 28 Jan 26"
+            from_match = re.search(r'From:\s+\d{1,2}\s+(\w+)\s+(\d{2})', text)
+            to_match = re.search(r'To:\s+\d{1,2}\s+(\w+)\s+(\d{2})', text)
+            
+            if to_match:
+                statement_end_month = to_match.group(1)
+                year_suffix = to_match.group(2)
+                statement_end_year = '20' + year_suffix
+            
+            if from_match:
+                statement_start_month = from_match.group(1)
+        
+        all_text.append(text)
+    
+    combined_text = '\n'.join(all_text)
+    lines = combined_text.split('\n')
+    
+    # Process lines
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Standard Bank date pattern: "30 Oct 25" or "01 Nov 25"
+        date_pattern = r'^(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2})\s+'
+        
+        match = re.match(date_pattern, line)
+        if match:
+            date_str = match.group(1)
+            
+            # Get description from this line (after date)
+            desc_parts = []
+            remainder = line[len(date_str):].strip()
+            if remainder and remainder != 'Date Description Payments Deposits Balance':
+                desc_parts.append(remainder)
+            
+            # Check next lines for description continuation and amount
+            j = i + 1
+            amount = None
+            
+            # Skip known metadata lines that are part of the transaction
+            metadata_keywords = [
+                'FEE:', 'IMMEDIATE PAYMENT', 'IB PAYMENT', 'CREDIT TRANSFER', 
+                'DEBIT TRANSFER', 'REAL TIME TRANSFER', 'ELECTRONIC TRF',
+                'INSURANCE PREMIUM', 'MONTHLY MANAGEMENT', 'SERVICE FEE'
+            ]
+            
+            while j < len(lines) and j < i + 5:  # Look ahead max 5 lines
+                next_line = lines[j].strip()
+                
+                if not next_line:
+                    j += 1
+                    continue
+                
+                # Check if this line is a new transaction (starts with date)
+                if re.match(date_pattern, next_line):
+                    break
+                
+                # Check if this line contains amount (has number with commas)
+                # Standard Bank format: either just deposit or -payment followed by balance
+                # Pattern: "-1,800.00 41,865.05" or "32,680.00 43,665.05"
+                amount_pattern = r'^(-?\d{1,3}(?:,\d{3})*\.\d{2})\s+\d{1,3}(?:,\d{3})*\.\d{2}$'
+                amount_match = re.search(amount_pattern, next_line)
+                
+                if amount_match:
+                    # This is the amount line
+                    amount = amount_match.group(1)
+                    j += 1
+                    break
+                else:
+                    # Check if it's a metadata line
+                    is_metadata = any(keyword in next_line for keyword in metadata_keywords)
+                    
+                    if not is_metadata and not next_line.startswith('ACC '):
+                        # This is a description continuation
+                        if len(next_line) > 3:
+                            desc_parts.append(next_line)
+                    j += 1
+            
+            # Update main index
+            i = j
+            
+            # Skip if no amount found
+            if not amount:
+                continue
+            
+            # Combine description
+            description = ' '.join(desc_parts).strip()
+            
+            # Skip opening balance
+            if 'OPENING BALANCE' in description.upper() or 'STATEMENT OPENING' in description.upper():
+                continue
+            
+            # Skip if description is empty
+            if not description or description == 'Date Description Payments Deposits Balance':
+                continue
+            
+            # Clean up description
+            description = description.replace('  ', ' ')
+            
+            # Convert date from "30 Oct 25" to "30/10/2025"
+            try:
+                # Parse the date string
+                month_map = {
+                    'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+                    'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+                    'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+                }
+                
+                # Month order for year rollover detection
+                month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                
+                # Split "30 Oct 25" into parts
+                parts = date_str.split()
+                if len(parts) == 3:
+                    day = parts[0].zfill(2)
+                    month_name = parts[1]
+                    month = month_map.get(month_name, '01')
+                    
+                    # Determine year based on month
+                    # If transaction month comes before the end month, it's the previous year
+                    # Example: Statement "Oct 25 to Jan 26" - Oct/Nov/Dec are 2025, Jan is 2026
+                    if statement_end_year and statement_end_month and statement_start_month:
+                        end_month_idx = month_order.index(statement_end_month) if statement_end_month in month_order else 0
+                        curr_month_idx = month_order.index(month_name) if month_name in month_order else 0
+                        
+                        # If current month > end month, it's in the previous year
+                        if curr_month_idx > end_month_idx:
+                            year = str(int(statement_end_year) - 1)
+                        else:
+                            year = statement_end_year
+                    else:
+                        # Fallback to year from date string
+                        year = '20' + parts[2]
+                    
+                    date_str = f"{day}/{month}/{year}"
+            except:
+                # If conversion fails, keep original format
+                pass
+            
+            # Apply inversion if requested
+            if invert_amounts:
+                try:
+                    amount_val = float(amount.replace(',', ''))
+                    amount_val = -amount_val
+                    amount = f"{amount_val:,.2f}"
+                except:
+                    pass
+            
+            transactions.append({
+                'Date': date_str,
+                'Description': description,
+                'Amount': amount
+            })
+        else:
+            i += 1
+    
+    return transactions
+
+def extract_transactions_from_fnb(pdf_path, invert_amounts=False):
     """Extract transaction data from FNB bank statement PDF"""
     
     transactions = []
@@ -270,8 +819,12 @@ def convert():
         invert_amounts_str = request.form.get('invert_amounts', 'false')
         invert_amounts = invert_amounts_str.lower() == 'true'
         
-        # Debug: log the invert setting
+        # Get output format option
+        output_format = request.form.get('output_format', 'excel')  # Default to excel
+        
+        # Debug: log the settings
         print(f"DEBUG: invert_amounts_str = '{invert_amounts_str}', invert_amounts = {invert_amounts}")
+        print(f"DEBUG: output_format = '{output_format}'")
         
         # Process all files
         output_files = []
@@ -289,15 +842,115 @@ def convert():
                 transactions = extract_transactions_from_pdf(filepath, invert_amounts)
                 all_transactions.extend(transactions)
                 
-                # Create Excel file in memory
-                output_filename = filename.replace('.pdf', '_transactions.xlsx')
+                # Create output file based on format
+                if output_format == 'csv':
+                    output_filename = filename.replace('.pdf', '_transactions.csv')
+                    # Create CSV in memory
+                    csv_buffer = StringIO()
+                    csv_writer = csv.writer(csv_buffer)
+                    
+                    # Write headers
+                    csv_writer.writerow(['Date', 'Description', 'Amount'])
+                    
+                    # Write data
+                    for transaction in transactions:
+                        csv_writer.writerow([
+                            transaction['Date'],
+                            transaction['Description'],
+                            transaction['Amount']
+                        ])
+                    
+                    # Store in memory as base64
+                    import base64
+                    csv_content = csv_buffer.getvalue()
+                    file_data[output_filename] = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
+                    
+                else:  # Excel format
+                    output_filename = filename.replace('.pdf', '_transactions.xlsx')
+                    
+                    # Create workbook
+                    wb = Workbook()
+                    ws = wb.active
+                    ws.title = "Bank Statement"
+                    
+                    # Headers
+                    headers = ['Date', 'Description', 'Amount']
+                    header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
+                    header_font = Font(bold=True, color='FFFFFF', size=12)
+                    
+                    for col_num, header in enumerate(headers, 1):
+                        cell = ws.cell(row=1, column=col_num, value=header)
+                        cell.fill = header_fill
+                        cell.font = header_font
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                    
+                    # Data
+                    for row_num, transaction in enumerate(transactions, 2):
+                        ws.cell(row=row_num, column=1, value=transaction['Date'])
+                        ws.cell(row=row_num, column=2, value=transaction['Description'])
+                        
+                        amount_str = transaction['Amount'].replace(',', '')
+                        try:
+                            amount_num = float(amount_str)
+                            cell = ws.cell(row=row_num, column=3, value=amount_num)
+                            cell.number_format = '#,##0.00'
+                        except:
+                            ws.cell(row=row_num, column=3, value=transaction['Amount'])
+                    
+                    # Column widths
+                    ws.column_dimensions['A'].width = 12
+                    ws.column_dimensions['B'].width = 50
+                    ws.column_dimensions['C'].width = 15
+                    
+                    # Save to BytesIO
+                    excel_buffer = BytesIO()
+                    wb.save(excel_buffer)
+                    excel_buffer.seek(0)
+                    
+                    # Store in memory
+                    import base64
+                    file_data[output_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
                 
-                # Create workbook
+                output_files.append({
+                    'original': filename,
+                    'output': output_filename,
+                    'transactions': len(transactions)
+                })
+                
+                # Clean up uploaded file
+                os.remove(filepath)
+        
+        # If multiple files, create a combined file and a ZIP
+        if len(output_files) > 1:
+            # Create combined file based on format
+            if output_format == 'csv':
+                combined_filename = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+                
+                csv_buffer = StringIO()
+                csv_writer = csv.writer(csv_buffer)
+                
+                # Write headers
+                csv_writer.writerow(['Date', 'Description', 'Amount'])
+                
+                # Write all transactions
+                for transaction in all_transactions:
+                    csv_writer.writerow([
+                        transaction['Date'],
+                        transaction['Description'],
+                        transaction['Amount']
+                    ])
+                
+                import base64
+                csv_content = csv_buffer.getvalue()
+                file_data[combined_filename] = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
+                
+            else:  # Excel format
+                combined_filename = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                
                 wb = Workbook()
                 ws = wb.active
                 ws.title = "Bank Statement"
                 
-                # Headers
                 headers = ['Date', 'Description', 'Amount']
                 header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
                 header_font = Font(bold=True, color='FFFFFF', size=12)
@@ -308,8 +961,7 @@ def convert():
                     cell.font = header_font
                     cell.alignment = Alignment(horizontal='center', vertical='center')
                 
-                # Data
-                for row_num, transaction in enumerate(transactions, 2):
+                for row_num, transaction in enumerate(all_transactions, 2):
                     ws.cell(row=row_num, column=1, value=transaction['Date'])
                     ws.cell(row=row_num, column=2, value=transaction['Description'])
                     
@@ -321,70 +973,16 @@ def convert():
                     except:
                         ws.cell(row=row_num, column=3, value=transaction['Amount'])
                 
-                # Column widths
                 ws.column_dimensions['A'].width = 12
                 ws.column_dimensions['B'].width = 50
                 ws.column_dimensions['C'].width = 15
                 
-                # Save to BytesIO
                 excel_buffer = BytesIO()
                 wb.save(excel_buffer)
                 excel_buffer.seek(0)
                 
-                # Store in memory
                 import base64
-                file_data[output_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
-                
-                output_files.append({
-                    'original': filename,
-                    'output': output_filename,
-                    'transactions': len(transactions)
-                })
-                
-                # Clean up uploaded file
-                os.remove(filepath)
-        
-        # If multiple files, create a combined Excel and a ZIP
-        if len(output_files) > 1:
-            # Create combined Excel in memory
-            combined_filename = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-            
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Bank Statement"
-            
-            headers = ['Date', 'Description', 'Amount']
-            header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
-            header_font = Font(bold=True, color='FFFFFF', size=12)
-            
-            for col_num, header in enumerate(headers, 1):
-                cell = ws.cell(row=1, column=col_num, value=header)
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-            
-            for row_num, transaction in enumerate(all_transactions, 2):
-                ws.cell(row=row_num, column=1, value=transaction['Date'])
-                ws.cell(row=row_num, column=2, value=transaction['Description'])
-                
-                amount_str = transaction['Amount'].replace(',', '')
-                try:
-                    amount_num = float(amount_str)
-                    cell = ws.cell(row=row_num, column=3, value=amount_num)
-                    cell.number_format = '#,##0.00'
-                except:
-                    ws.cell(row=row_num, column=3, value=transaction['Amount'])
-            
-            ws.column_dimensions['A'].width = 12
-            ws.column_dimensions['B'].width = 50
-            ws.column_dimensions['C'].width = 15
-            
-            excel_buffer = BytesIO()
-            wb.save(excel_buffer)
-            excel_buffer.seek(0)
-            
-            import base64
-            file_data[combined_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
+                file_data[combined_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
             
             # Create ZIP in memory
             zip_filename = f'all_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'

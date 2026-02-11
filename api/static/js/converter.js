@@ -150,6 +150,10 @@ uploadForm.addEventListener('submit', async (e) => {
         const invertAmounts = document.getElementById('invertAmounts').checked;
         formData.append('invert_amounts', invertAmounts);
         
+        // Add output format option
+        const outputFormat = document.querySelector('input[name="output_format"]:checked').value;
+        formData.append('output_format', outputFormat);
+        
         // Send request
         const response = await fetch('/convert', {
             method: 'POST',
@@ -174,6 +178,18 @@ uploadForm.addEventListener('submit', async (e) => {
         errorMessage.textContent = err.message;
         convertBtn.disabled = false;
     }
+});
+
+// Update button text when format changes
+document.querySelectorAll('input[name="output_format"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        const btnText = document.getElementById('convertBtnText');
+        if (e.target.value === 'excel') {
+            btnText.textContent = 'Convert to Excel';
+        } else {
+            btnText.textContent = 'Convert to CSV';
+        }
+    });
 });
 
 // Display results

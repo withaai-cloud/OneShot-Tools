@@ -150,6 +150,10 @@ uploadForm.addEventListener('submit', async (e) => {
         const invertAmounts = document.getElementById('invertAmounts').checked;
         formData.append('invert_amounts', invertAmounts);
         
+        // Add output format option
+        const outputFormat = document.querySelector('input[name="output_format"]:checked').value;
+        formData.append('output_format', outputFormat);
+        
         // Send request
         const response = await fetch('/convert', {
             method: 'POST',
@@ -176,9 +180,31 @@ uploadForm.addEventListener('submit', async (e) => {
     }
 });
 
+// Update button text when format changes
+document.querySelectorAll('input[name="output_format"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        const btnText = document.getElementById('convertBtnText');
+        if (e.target.value === 'excel') {
+            btnText.textContent = 'Convert to Excel';
+        } else {
+            btnText.textContent = 'Convert to CSV';
+        }
+    });
+});
+
 // Display results
 function displayResults(data) {
     resultsContent.innerHTML = '';
+    
+    // Helper function to trigger download from base64
+    function downloadFile(filename, base64Data) {
+        const link = document.createElement('a');
+        link.href = 'data:application/octet-stream;base64,' + base64Data;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
     
     if (data.multiple) {
         // Multiple files processed
@@ -194,27 +220,41 @@ function displayResults(data) {
         data.files.forEach(file => {
             const fileResult = document.createElement('div');
             fileResult.className = 'result-file';
-            fileResult.innerHTML = `
-                <h4>${file.original}</h4>
-                <p class="result-stats">${file.transactions} transactions</p>
-                <a href="/download/${file.output}" class="btn btn-secondary" download>
-                    Download Excel →
-                </a>
-            `;
+            
+            const title = document.createElement('h4');
+            title.textContent = file.original;
+            fileResult.appendChild(title);
+            
+            const stats = document.createElement('p');
+            stats.className = 'result-stats';
+            stats.textContent = `${file.transactions} transactions`;
+            fileResult.appendChild(stats);
+            
+            const downloadBtn = document.createElement('button');
+            downloadBtn.className = 'btn btn-secondary';
+            downloadBtn.textContent = 'Download Excel →';
+            downloadBtn.onclick = () => downloadFile(file.output, data.file_data[file.output]);
+            fileResult.appendChild(downloadBtn);
+            
             resultsContent.appendChild(fileResult);
         });
         
         // Combined and ZIP download
         const downloadButtons = document.createElement('div');
         downloadButtons.className = 'download-buttons';
-        downloadButtons.innerHTML = `
-            <a href="/download/${data.combined}" class="btn btn-primary" download>
-                📊 Download Combined Excel
-            </a>
-            <a href="/download/${data.zip}" class="btn btn-primary" download>
-                📦 Download All (ZIP)
-            </a>
-        `;
+        
+        const combinedBtn = document.createElement('button');
+        combinedBtn.className = 'btn btn-primary';
+        combinedBtn.textContent = '📊 Download Combined Excel';
+        combinedBtn.onclick = () => downloadFile(data.combined, data.file_data[data.combined]);
+        downloadButtons.appendChild(combinedBtn);
+        
+        const zipBtn = document.createElement('button');
+        zipBtn.className = 'btn btn-primary';
+        zipBtn.textContent = '📦 Download All (ZIP)';
+        zipBtn.onclick = () => downloadFile(data.zip, data.file_data[data.zip]);
+        downloadButtons.appendChild(zipBtn);
+        
         resultsContent.appendChild(downloadButtons);
         
     } else {
@@ -229,11 +269,13 @@ function displayResults(data) {
         
         const downloadButtons = document.createElement('div');
         downloadButtons.className = 'download-buttons';
-        downloadButtons.innerHTML = `
-            <a href="/download/${data.file}" class="btn btn-primary" download>
-                📊 Download Excel File
-            </a>
-        `;
+        
+        const downloadBtn = document.createElement('button');
+        downloadBtn.className = 'btn btn-primary';
+        downloadBtn.textContent = '📊 Download Excel File';
+        downloadBtn.onclick = () => downloadFile(data.file, data.file_data[data.file]);
+        downloadButtons.appendChild(downloadBtn);
+        
         resultsContent.appendChild(downloadButtons);
     }
     
