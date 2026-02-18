@@ -120,12 +120,18 @@ def decode_absa_text(text):
 
 def detect_bank_format(text):
     """Detect if the statement is from FNB, ABSA, or Standard Bank"""
-    if 'ABSA' in text.upper() or 'Absa Bank' in text:
-        return 'ABSA'
+    # Check for official bank identifiers first (more specific)
+    if 'FNB FUSION' in text.upper() or 'FIRST NATIONAL BANK' in text.upper():
+        return 'FNB'
     elif 'STANDARD BANK' in text.upper():
         return 'STANDARD_BANK'
-    elif 'FNB' in text.upper() or 'First National Bank' in text:
+    elif 'ABSA BANK' in text or 'Absa Bank' in text:
+        return 'ABSA'
+    # Fallback to less specific checks
+    elif 'FNB' in text.upper():
         return 'FNB'
+    elif 'ABSA' in text.upper():
+        return 'ABSA'
     # Default to FNB if unclear
     return 'FNB'
 
