@@ -13,6 +13,23 @@ const loading = document.getElementById('loading');
 const error = document.getElementById('error');
 const resultsContent = document.getElementById('resultsContent');
 const errorMessage = document.getElementById('errorMessage');
+const statementYearSelect = document.getElementById('statementYear');
+
+// Populate year dropdown (current year and 5 years back)
+function populateYearDropdown() {
+    const currentYear = new Date().getFullYear();
+    
+    for (let i = 0; i <= 5; i++) {
+        const year = currentYear - i;
+        const option = document.createElement('option');
+        option.value = year;
+        option.textContent = year;
+        statementYearSelect.appendChild(option);
+    }
+}
+
+// Initialize year dropdown on page load
+populateYearDropdown();
 
 // Drag and drop handlers
 uploadArea.addEventListener('dragover', (e) => {
@@ -32,8 +49,12 @@ uploadArea.addEventListener('drop', (e) => {
     handleFiles(files);
 });
 
-// Click to upload
-uploadArea.addEventListener('click', () => {
+// Click to upload - but not if clicking the button itself
+uploadArea.addEventListener('click', (e) => {
+    // Don't trigger if clicking the button (it has its own handler)
+    if (e.target.tagName === 'BUTTON' || e.target.closest('button')) {
+        return;
+    }
     fileInput.click();
 });
 
@@ -154,6 +175,10 @@ uploadForm.addEventListener('submit', async (e) => {
         const outputFormat = document.querySelector('input[name="output_format"]:checked').value;
         formData.append('output_format', outputFormat);
         
+        // Add statement year option
+        const statementYear = document.getElementById('statementYear').value;
+        formData.append('statement_year', statementYear);
+        
         // Send request
         const response = await fetch('/convert', {
             method: 'POST',
@@ -232,7 +257,7 @@ function displayResults(data) {
             
             const downloadBtn = document.createElement('button');
             downloadBtn.className = 'btn btn-secondary';
-            downloadBtn.textContent = 'Download Excel →';
+            downloadBtn.textContent = 'Download File →';
             downloadBtn.onclick = () => downloadFile(file.output, data.file_data[file.output]);
             fileResult.appendChild(downloadBtn);
             
@@ -245,7 +270,7 @@ function displayResults(data) {
         
         const combinedBtn = document.createElement('button');
         combinedBtn.className = 'btn btn-primary';
-        combinedBtn.textContent = '📊 Download Combined Excel';
+        combinedBtn.textContent = '📊 Download Combined File';
         combinedBtn.onclick = () => downloadFile(data.combined, data.file_data[data.combined]);
         downloadButtons.appendChild(combinedBtn);
         
@@ -272,7 +297,7 @@ function displayResults(data) {
         
         const downloadBtn = document.createElement('button');
         downloadBtn.className = 'btn btn-primary';
-        downloadBtn.textContent = '📊 Download Excel File';
+        downloadBtn.textContent = '📊 Download File';
         downloadBtn.onclick = () => downloadFile(data.file, data.file_data[data.file]);
         downloadButtons.appendChild(downloadBtn);
         

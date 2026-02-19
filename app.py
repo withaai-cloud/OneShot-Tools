@@ -135,11 +135,11 @@ def detect_bank_format(text):
     # Default to FNB if unclear
     return 'FNB'
 
-def extract_transactions_from_absa(pdf_path, invert_amounts=False):
+def extract_transactions_from_absa(pdf_path, invert_amounts=False, statement_year='auto'):
     """Extract transaction data from ABSA bank statement PDF"""
     
     transactions = []
-    statement_year = None
+    detected_year = None
     
     # Open the PDF
     pdf = pdfium.PdfDocument(pdf_path)
@@ -155,12 +155,15 @@ def extract_transactions_from_absa(pdf_path, invert_amounts=False):
         text = decode_absa_text(text)
         
         # Extract year from statement period (first page only)
-        if page_num == 0 and not statement_year:
+        if page_num == 0 and not detected_year:
             year_match = re.search(r'(\d{1,2})\s+\w+\s+(\d{4})\s+to', text)
             if year_match:
-                statement_year = year_match.group(2)
+                detected_year = year_match.group(2)
         
         all_text.append(text)
+    
+    # Use override year if provided, otherwise use detected year
+    year_to_use = statement_year if statement_year != 'auto' else detected_year
     
     # Join all pages with a special marker so we know where page breaks are
     combined_text = '\n'.join(all_text)
@@ -416,7 +419,7 @@ def extract_transactions_from_absa(pdf_path, invert_amounts=False):
     
     return transactions
 
-def extract_transactions_from_pdf(pdf_path, invert_amounts=False):
+def extract_transactions_from_pdf(pdf_path, invert_amounts=False, statement_year='auto'):
     """Extract transaction data from bank statement PDF (supports FNB, ABSA, and Standard Bank)"""
     
     # Read first page to detect bank format
@@ -428,17 +431,17 @@ def extract_transactions_from_pdf(pdf_path, invert_amounts=False):
     bank_format = detect_bank_format(text)
     
     if bank_format == 'ABSA':
-        return extract_transactions_from_absa(pdf_path, invert_amounts)
+        return extract_transactions_from_absa(pdf_path, invert_amounts, statement_year)
     elif bank_format == 'STANDARD_BANK':
-        return extract_transactions_from_standard_bank(pdf_path, invert_amounts)
+        return extract_transactions_from_standard_bank(pdf_path, invert_amounts, statement_year)
     else:
-        return extract_transactions_from_fnb(pdf_path, invert_amounts)
+        return extract_transactions_from_fnb(pdf_path, invert_amounts, statement_year)
 
-def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False):
+def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False, statement_year='auto'):
     """Extract transaction data from Standard Bank statement PDF"""
     
     transactions = []
-    statement_end_year = None
+    detected_end_year = None
     statement_start_month = None
     statement_end_month = None
     
@@ -461,12 +464,15 @@ def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False):
             if to_match:
                 statement_end_month = to_match.group(1)
                 year_suffix = to_match.group(2)
-                statement_end_year = '20' + year_suffix
+                detected_end_year = '20' + year_suffix
             
             if from_match:
                 statement_start_month = from_match.group(1)
         
         all_text.append(text)
+    
+    # Use override year if provided, otherwise use detected year
+    statement_end_year = statement_year if statement_year != 'auto' else detected_end_year
     
     combined_text = '\n'.join(all_text)
     lines = combined_text.split('\n')
@@ -613,26 +619,32 @@ def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False):
     
     return transactions
 
-def extract_transactions_from_fnb(pdf_path, invert_amounts=False):
+def extract_transactions_from_fnb(pdf_path, invert_amounts=False, statement_year='auto'):
     """Extract transaction data from FNB bank statement PDF"""
     
     transactions = []
-    statement_year = None
+    detected_year = None
     
     # Open the PDF
     pdf = pdfium.PdfDocument(pdf_path)
+    
+    # First, detect the year from first page
+    first_page = pdf[0]
+    first_textpage = first_page.get_textpage()
+    first_text = first_textpage.get_text_range()
+    
+    year_match = re.search(r'Statement Period.*?(\d{4})', first_text)
+    if year_match:
+        detected_year = year_match.group(1)
+    
+    # Use override year if provided, otherwise use detected year
+    year_to_use = statement_year if statement_year != 'auto' else detected_year
     
     # Process each page
     for page_num in range(len(pdf)):
         page = pdf[page_num]
         textpage = page.get_textpage()
         text = textpage.get_text_range()
-        
-        # Extract year from statement period (only on first page)
-        if page_num == 0 and not statement_year:
-            year_match = re.search(r'Statement Period.*?(\d{4})', text)
-            if year_match:
-                statement_year = year_match.group(1)
         
         # Split into lines
         lines = text.split('\n')
@@ -697,7 +709,7 @@ def extract_transactions_from_fnb(pdf_path, invert_amounts=False):
                             day = date_parts[0]
                             month_abbr = date_parts[1]
                             month = month_map.get(month_abbr, '01')
-                            formatted_date = f"{day}/{month}/{statement_year}"
+                            formatted_date = f"{day}/{month}/{year_to_use}"
                         else:
                             formatted_date = date_str
                         
@@ -828,9 +840,13 @@ def convert():
         # Get output format option
         output_format = request.form.get('output_format', 'excel')  # Default to excel
         
+        # Get statement year option
+        statement_year = request.form.get('statement_year', 'auto')  # Default to auto
+        
         # Debug: log the settings
         print(f"DEBUG: invert_amounts_str = '{invert_amounts_str}', invert_amounts = {invert_amounts}")
         print(f"DEBUG: output_format = '{output_format}'")
+        print(f"DEBUG: statement_year = '{statement_year}'")
         
         # Process all files
         output_files = []
@@ -844,8 +860,8 @@ def convert():
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
                 
-                # Extract transactions
-                transactions = extract_transactions_from_pdf(filepath, invert_amounts)
+                # Extract transactions with optional year override
+                transactions = extract_transactions_from_pdf(filepath, invert_amounts, statement_year)
                 all_transactions.extend(transactions)
                 
                 # Create output file based on format
