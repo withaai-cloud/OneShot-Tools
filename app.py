@@ -135,14 +135,14 @@ def detect_bank_format(text):
     # Default to FNB if unclear
     return 'FNB'
 
-def extract_transactions_from_absa(pdf_path, invert_amounts=False, statement_year='auto'):
+def extract_transactions_from_absa(pdf_path, invert_amounts=False, statement_year='auto', password=''):
     """Extract transaction data from ABSA bank statement PDF"""
     
     transactions = []
     detected_year = None
     
-    # Open the PDF
-    pdf = pdfium.PdfDocument(pdf_path)
+    # Open the PDF (with password if provided)
+    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
     
     # Combine all pages into one text block to handle cross-page continuations
     all_text = []
@@ -419,34 +419,193 @@ def extract_transactions_from_absa(pdf_path, invert_amounts=False, statement_yea
     
     return transactions
 
-def extract_transactions_from_pdf(pdf_path, invert_amounts=False, statement_year='auto'):
+def extract_transactions_from_pdf(pdf_path, invert_amounts=False, statement_year='auto', password=''):
     """Extract transaction data from bank statement PDF (supports FNB, ABSA, and Standard Bank)"""
     
-    # Read first page to detect bank format
-    pdf = pdfium.PdfDocument(pdf_path)
+    # Read first page to detect bank format (with password if provided)
+    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
     page = pdf[0]
     textpage = page.get_textpage()
     text = textpage.get_text_range()
     
+    # Check if PDF has extractable text
+    if len(text.strip()) < 50:  # Very little or no text
+        # This is likely an image-based/scanned PDF
+        return []  # Return empty list - will be handled in the route
+    
     bank_format = detect_bank_format(text)
     
     if bank_format == 'ABSA':
-        return extract_transactions_from_absa(pdf_path, invert_amounts, statement_year)
+        return extract_transactions_from_absa(pdf_path, invert_amounts, statement_year, password)
     elif bank_format == 'STANDARD_BANK':
-        return extract_transactions_from_standard_bank(pdf_path, invert_amounts, statement_year)
+        return extract_transactions_from_standard_bank(pdf_path, invert_amounts, statement_year, password)
     else:
-        return extract_transactions_from_fnb(pdf_path, invert_amounts, statement_year)
+        return extract_transactions_from_fnb(pdf_path, invert_amounts, statement_year, password)
 
-def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False, statement_year='auto'):
+def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False, statement_year='auto', password=''):
     """Extract transaction data from Standard Bank statement PDF"""
+    
+    # Open the PDF to detect which format
+    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
+    first_page = pdf[0]
+    first_textpage = first_page.get_textpage()
+    first_text = first_textpage.get_text_range()
+    
+    # Detect format type
+    if 'BUSINESS CURRENT ACCOUNT' in first_text:
+        # Business format: Date format "01 02" (DD MM)
+        return extract_transactions_from_standard_bank_business(pdf_path, invert_amounts, statement_year, password)
+    else:
+        # Personal format: Date format "30 Oct 25"
+        return extract_transactions_from_standard_bank_personal(pdf_path, invert_amounts, statement_year, password)
+
+def extract_transactions_from_standard_bank_business(pdf_path, invert_amounts=False, statement_year='auto', password=''):
+    """Extract transaction data from Standard Bank Business Current Account statement"""
+    
+    transactions = []
+    detected_year = None
+    detected_month = None
+    
+    # Open the PDF
+    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
+    
+    # Combine all pages
+    all_text = []
+    for page_num in range(len(pdf)):
+        page = pdf[page_num]
+        textpage = page.get_textpage()
+        text = textpage.get_text_range()
+        
+        # Extract year and month from first page
+        if page_num == 0:
+            # Look for "Statement from 02 January 2026 to 31 January 2026"
+            year_match = re.search(r'Statement from.*?(\w+)\s+(\d{4})', text)
+            if year_match:
+                detected_month = year_match.group(1)
+                detected_year = year_match.group(2)
+        
+        all_text.append(text)
+    
+    # Use override year if provided
+    year_to_use = statement_year if statement_year != 'auto' else detected_year
+    
+    combined_text = '\n'.join(all_text)
+    lines = combined_text.split('\n')
+    
+    # Month name mapping
+    month_map = {
+        'January': '01', 'February': '02', 'March': '03', 'April': '04',
+        'May': '05', 'June': '06', 'July': '07', 'August': '08',
+        'September': '09', 'October': '10', 'November': '11', 'December': '12'
+    }
+    
+    statement_month_num = month_map.get(detected_month, '01') if detected_month else '01'
+    
+    # Process lines
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Look for date pattern at end of line: "01 02" or "01 03" (DD MM)
+        date_pattern = r'(\d{1,2}\s+\d{2})\s+[\d,]+\.?\d*\s*$'
+        date_match = re.search(date_pattern, line)
+        
+        if date_match:
+            date_str = date_match.group(1)  # e.g., "01 02"
+            
+            # Parse date parts - Standard Bank Business format is "MM DD" in the PDF
+            # Example: "01 02" means Month 01 (January), Day 02
+            # We need to swap them for DD/MM/YYYY format
+            parts = date_str.split()
+            if len(parts) == 2:
+                month = parts[0].zfill(2)  # First number is MONTH
+                day = parts[1].zfill(2)    # Second number is DAY
+                
+                # Extract amount (number right before date, with possible minus sign)
+                # Pattern: amount (with optional -) followed by date and balance
+                amount_pattern = r'([\d,]+\.\d{2}-?)\s+\d{1,2}\s+\d{2}\s+[\d,]+\.\d{2}\s*$'
+                amount_match = re.search(amount_pattern, line)
+                
+                if amount_match:
+                    amount = amount_match.group(1)
+                    
+                    # Get description (everything before the amount)
+                    # The pattern is: [Description] [Service Fee] [Amount] [Date] [Balance]
+                    # Find where the numbers start (service fee or amount)
+                    # Look for the LAST occurrence of a number sequence before the amount/date/balance
+                    
+                    # Remove amount, date, and balance from end
+                    temp_line = re.sub(r'[\d,]+\.\d{2}-?\s+\d{1,2}\s+\d{2}\s+[\d,]+\.\d{2}\s*$', '', line).strip()
+                    
+                    # Also remove service fee if present (numbers at end like "9.30" or "20.00" or "##")
+                    temp_line = re.sub(r'\s+(##|[\d\.]+)\s*$', '', temp_line).strip()
+                    
+                    description = temp_line
+                    
+                    # Check if description continues on next line
+                    if i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        # Next line is continuation if it:
+                        # 1. Doesn't end with a date pattern (DD MM Balance)
+                        # 2. Doesn't start with known headers
+                        # 3. Isn't empty
+                        has_transaction = re.search(r'\d{1,2}\s+\d{2}\s+[\d,]+\.\d{2}\s*$', next_line)
+                        is_header = re.match(r'^(Details|Fee|BALANCE|##|VRYHEID|PO BOX|Business|THE MEMBERS|Statement)', next_line)
+                        
+                        if not has_transaction and not is_header and next_line:
+                            description += ' ' + next_line
+                            i += 1  # Skip next line since we consumed it
+                    
+                    # Skip header rows and balance forward
+                    if 'BALANCE BROUGHT FORWARD' in description or 'Details Service' in description:
+                        i += 1
+                        continue
+                    
+                    # Clean up description - remove extra spaces
+                    description = ' '.join(description.split())
+                    
+                    # Clean up amount - handle negative sign
+                    is_negative = amount.endswith('-')
+                    amount_clean = amount.replace('-', '')
+                    
+                    if is_negative:
+                        amount_clean = '-' + amount_clean
+                    
+                    # Apply inversion if requested
+                    if invert_amounts:
+                        try:
+                            amount_val = float(amount_clean.replace(',', ''))
+                            amount_val = -amount_val
+                            if amount_val >= 0:
+                                amount_clean = f"{amount_val:,.2f}"
+                            else:
+                                amount_clean = f"-{abs(amount_val):,.2f}"
+                        except:
+                            pass
+                    
+                    # Format date as DD/MM/YYYY
+                    formatted_date = f"{day}/{month}/{year_to_use}"
+                    
+                    transactions.append({
+                        'Date': formatted_date,
+                        'Description': description,
+                        'Amount': amount_clean
+                    })
+        
+        i += 1
+    
+    return transactions
+
+def extract_transactions_from_standard_bank_personal(pdf_path, invert_amounts=False, statement_year='auto', password=''):
+    """Extract transaction data from Standard Bank Personal statement (old format)"""
     
     transactions = []
     detected_end_year = None
     statement_start_month = None
     statement_end_month = None
     
-    # Open the PDF
-    pdf = pdfium.PdfDocument(pdf_path)
+    # Open the PDF (with password if provided)
+    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
     
     # Combine all pages
     all_text = []
@@ -619,14 +778,14 @@ def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False, stat
     
     return transactions
 
-def extract_transactions_from_fnb(pdf_path, invert_amounts=False, statement_year='auto'):
+def extract_transactions_from_fnb(pdf_path, invert_amounts=False, statement_year='auto', password=''):
     """Extract transaction data from FNB bank statement PDF"""
     
     transactions = []
     detected_year = None
     
-    # Open the PDF
-    pdf = pdfium.PdfDocument(pdf_path)
+    # Open the PDF (with password if provided)
+    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
     
     # First, detect the year from first page
     first_page = pdf[0]
@@ -843,10 +1002,14 @@ def convert():
         # Get statement year option
         statement_year = request.form.get('statement_year', 'auto')  # Default to auto
         
+        # Get PDF password if provided
+        pdf_password = request.form.get('pdf_password', '')  # Default to empty string
+        
         # Debug: log the settings
         print(f"DEBUG: invert_amounts_str = '{invert_amounts_str}', invert_amounts = {invert_amounts}")
         print(f"DEBUG: output_format = '{output_format}'")
         print(f"DEBUG: statement_year = '{statement_year}'")
+        print(f"DEBUG: pdf_password = {'***' if pdf_password else 'None'}")
         
         # Process all files
         output_files = []
@@ -860,8 +1023,32 @@ def convert():
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
                 
-                # Extract transactions with optional year override
-                transactions = extract_transactions_from_pdf(filepath, invert_amounts, statement_year)
+                # Try to extract transactions with optional year override and password
+                try:
+                    transactions = extract_transactions_from_pdf(filepath, invert_amounts, statement_year, pdf_password)
+                except Exception as e:
+                    # Clean up uploaded file
+                    os.remove(filepath)
+                    
+                    # Check if it's a password error
+                    if 'password' in str(e).lower() or 'encrypted' in str(e).lower():
+                        return jsonify({
+                            'error': f'Unable to open "{filename}". The PDF appears to be password-protected. Please enter the correct password in the "PDF Password" field.'
+                        }), 400
+                    else:
+                        # Generic error
+                        return jsonify({
+                            'error': f'Error processing "{filename}": {str(e)}'
+                        }), 400
+                
+                # Check if PDF is scanned/image-based
+                if len(transactions) == 0:
+                    # Clean up uploaded file
+                    os.remove(filepath)
+                    return jsonify({
+                        'error': f'Unable to extract text from "{filename}". This appears to be a scanned/image-based PDF. Please ensure your PDF has selectable text, or use a text-searchable PDF version of your statement.'
+                    }), 400
+                
                 all_transactions.extend(transactions)
                 
                 # Create output file based on format

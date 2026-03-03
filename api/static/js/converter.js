@@ -179,6 +179,12 @@ uploadForm.addEventListener('submit', async (e) => {
         const statementYear = document.getElementById('statementYear').value;
         formData.append('statement_year', statementYear);
         
+        // Add PDF password if provided
+        const pdfPassword = document.getElementById('pdfPassword').value;
+        if (pdfPassword) {
+            formData.append('pdf_password', pdfPassword);
+        }
+        
         // Send request
         const response = await fetch('/convert', {
             method: 'POST',
