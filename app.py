@@ -827,22 +827,45 @@ def extract_transactions_from_fnb(pdf_path, invert_amounts=False, statement_year
                     # Find amount - looking for pattern with digits, commas, decimals
                     amount_pattern = r'[\d,]+\.\d{2}(?:Cr|Dr)?'
                     
+                    # FNB format can have:
+                    # Normal: [Description] [Amount] [Balance]
+                    # With charges: [Description] [Amount] [Balance] [BankCharge]
+                    
                     # Search from the end of parts
                     amount = None
                     description_parts = []
                     balance_found = False
+                    bank_charge_skipped = False
                     
                     for j in range(len(parts) - 1, -1, -1):
                         part = parts[j]
                         
                         # Check if this looks like a monetary amount
                         if re.match(amount_pattern, part):
+                            # First number from the right could be:
+                            # 1. Balance (if has Cr/Dr suffix and is large)
+                            # 2. Bank charge (if small and no suffix, like 1.50)
+                            
                             if not balance_found and not amount:
-                                # This is likely the balance (last monetary value)
-                                balance_found = True
-                                continue
+                                # Check if this is a small bank charge (typically < 100 and no Cr/Dr)
+                                # OR if it's the balance (has Cr/Dr)
+                                has_suffix = 'Cr' in part or 'Dr' in part
+                                try:
+                                    num_val = float(part.replace('Cr', '').replace('Dr', '').replace(',', ''))
+                                    is_small = num_val < 100
+                                except:
+                                    is_small = False
+                                
+                                if not has_suffix and is_small:
+                                    # This looks like a bank charge, skip it
+                                    bank_charge_skipped = True
+                                    continue
+                                else:
+                                    # This is the balance (last monetary value)
+                                    balance_found = True
+                                    continue
                             elif balance_found and not amount:
-                                # This is the amount (second to last monetary value)
+                                # This is the amount (second to last monetary value, or third if we skipped bank charge)
                                 amount = part
                                 # Everything before this is description
                                 description_parts = parts[:j]
