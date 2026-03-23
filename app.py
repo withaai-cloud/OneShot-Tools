@@ -422,16 +422,37 @@ def extract_transactions_from_absa(pdf_path, invert_amounts=False, statement_yea
 def extract_transactions_from_pdf(pdf_path, invert_amounts=False, statement_year='auto', password=''):
     """Extract transaction data from bank statement PDF (supports FNB, ABSA, and Standard Bank)"""
     
-    # Read first page to detect bank format (with password if provided)
-    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
-    page = pdf[0]
-    textpage = page.get_textpage()
-    text = textpage.get_text_range()
+    # Try to open the PDF with password
+    try:
+        if password:
+            pdf = pdfium.PdfDocument(pdf_path, password=password)
+        else:
+            pdf = pdfium.PdfDocument(pdf_path)
+    except Exception as e:
+        error_msg = str(e).lower()
+        if 'password' in error_msg or 'encrypted' in error_msg or 'incorrect' in error_msg:
+            raise Exception(f"Cannot open PDF: The password appears to be incorrect or the PDF encryption is not supported. Error: {str(e)}")
+        else:
+            raise Exception(f"Error opening PDF: {str(e)}")
+    
+    # Try to extract text from first page
+    try:
+        page = pdf[0]
+        textpage = page.get_textpage()
+        text = textpage.get_text_range()
+    except Exception as e:
+        # If text extraction fails after opening, might be permission issue
+        raise Exception(f"PDF opened but cannot extract text. This might indicate copy protection or permissions restrictions. Error: {str(e)}")
     
     # Check if PDF has extractable text
-    if len(text.strip()) < 50:  # Very little or no text
-        # This is likely an image-based/scanned PDF
-        return []  # Return empty list - will be handled in the route
+    if len(text.strip()) < 50:
+        if password:
+            # Password was provided, PDF opened, but no text
+            # This suggests the PDF might have text but be copy-protected
+            return []
+        else:
+            # No password, might need one
+            return []
     
     bank_format = detect_bank_format(text)
     
@@ -506,8 +527,12 @@ def extract_transactions_from_standard_bank_business(pdf_path, invert_amounts=Fa
     while i < len(lines):
         line = lines[i].strip()
         
-        # Look for date pattern at end of line: "01 02" or "01 03" (DD MM)
-        date_pattern = r'(\d{1,2}\s+\d{2})\s+[\d,]+\.?\d*\s*$'
+        # Look for date pattern: "DD MM" followed by balance
+        # Balance can be in two formats:
+        # - US format: 62,243.22 (comma for thousands, period for decimal)
+        # - European format: 1.339.845,39 (period for thousands, comma for decimal)
+        # Pattern: date (2 numbers) followed by a balance number at the end
+        date_pattern = r'(\d{1,2}\s+\d{2})\s+[\d.,]+\s*$'
         date_match = re.search(date_pattern, line)
         
         if date_match:
@@ -523,7 +548,8 @@ def extract_transactions_from_standard_bank_business(pdf_path, invert_amounts=Fa
                 
                 # Extract amount (number right before date, with possible minus sign)
                 # Pattern: amount (with optional -) followed by date and balance
-                amount_pattern = r'([\d,]+\.\d{2}-?)\s+\d{1,2}\s+\d{2}\s+[\d,]+\.\d{2}\s*$'
+                # Amount can be: 140,00 or 2,321.91- or 1.500,00
+                amount_pattern = r'([\d.,]+\d{2}-?)\s+\d{1,2}\s+\d{2}\s+[\d.,]+\s*$'
                 amount_match = re.search(amount_pattern, line)
                 
                 if amount_match:
@@ -535,7 +561,7 @@ def extract_transactions_from_standard_bank_business(pdf_path, invert_amounts=Fa
                     # Look for the LAST occurrence of a number sequence before the amount/date/balance
                     
                     # Remove amount, date, and balance from end
-                    temp_line = re.sub(r'[\d,]+\.\d{2}-?\s+\d{1,2}\s+\d{2}\s+[\d,]+\.\d{2}\s*$', '', line).strip()
+                    temp_line = re.sub(r'[\d.,]+\d{2}-?\s+\d{1,2}\s+\d{2}\s+[\d.,]+\s*$', '', line).strip()
                     
                     # Also remove service fee if present (numbers at end like "9.30" or "20.00" or "##")
                     temp_line = re.sub(r'\s+(##|[\d\.]+)\s*$', '', temp_line).strip()
@@ -564,9 +590,18 @@ def extract_transactions_from_standard_bank_business(pdf_path, invert_amounts=Fa
                     # Clean up description - remove extra spaces
                     description = ' '.join(description.split())
                     
-                    # Clean up amount - handle negative sign
+                    # Clean up amount - handle negative sign and European format
+                    # European format: 1.500,00 (period=thousands, comma=decimal)
+                    # US format: 1,500.00 (comma=thousands, period=decimal)
                     is_negative = amount.endswith('-')
                     amount_clean = amount.replace('-', '')
+                    
+                    # Convert European format to US format if needed
+                    # Check if it uses comma as decimal separator (e.g., "140,00" or "1.500,00")
+                    if ',' in amount_clean:
+                        # European format detected
+                        # Remove thousand separators (periods) and convert comma to period
+                        amount_clean = amount_clean.replace('.', '').replace(',', '.')
                     
                     if is_negative:
                         amount_clean = '-' + amount_clean
@@ -1064,13 +1099,22 @@ def convert():
                             'error': f'Error processing "{filename}": {str(e)}'
                         }), 400
                 
-                # Check if PDF is scanned/image-based
+                # Check if PDF is scanned/image-based or password issue
                 if len(transactions) == 0:
                     # Clean up uploaded file
                     os.remove(filepath)
-                    return jsonify({
-                        'error': f'Unable to extract text from "{filename}". This appears to be a scanned/image-based PDF. Please ensure your PDF has selectable text, or use a text-searchable PDF version of your statement.'
-                    }), 400
+                    
+                    # Provide more helpful error message based on context
+                    if pdf_password:
+                        # Password was provided but no text extracted
+                        return jsonify({
+                            'error': f'Unable to extract text from "{filename}". This could mean: (1) The password is incorrect, (2) The PDF is scanned/image-based, or (3) The PDF format is not supported. Please verify the password and ensure the PDF has selectable text.'
+                        }), 400
+                    else:
+                        # No password provided
+                        return jsonify({
+                            'error': f'Unable to extract text from "{filename}". This appears to be a scanned/image-based PDF or may be password-protected. If password-protected, please enter the password in the "PDF Password" field. Otherwise, ensure your PDF has selectable text.'
+                        }), 400
                 
                 all_transactions.extend(transactions)
                 
