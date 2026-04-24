@@ -4,151 +4,260 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bank Statement Converter - OneShot Tools</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f0f4f8; color: #333; }
+        .header { background: #1a1a2e; color: white; padding: 20px 40px; display: flex; align-items: center; gap: 16px; }
+        .header a { color: #7ecfff; text-decoration: none; font-size: 14px; }
+        .header h1 { font-size: 24px; }
+        .container { max-width: 800px; margin: 40px auto; padding: 0 20px; }
+        .card { background: white; border-radius: 12px; padding: 32px; box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; }
+        h2 { color: #1a1a2e; margin-bottom: 8px; }
+        .subtitle { color: #666; margin-bottom: 24px; font-size: 14px; }
+        .drop-zone { border: 2px dashed #c0cfe0; border-radius: 8px; padding: 40px; text-align: center; cursor: pointer; transition: all 0.2s; background: #f8fbff; }
+        .drop-zone:hover, .drop-zone.drag-over { border-color: #3b82f6; background: #eff6ff; }
+        .drop-zone .icon { font-size: 40px; margin-bottom: 12px; }
+        .drop-zone p { color: #555; margin: 4px 0; }
+        .drop-zone .hint { font-size: 12px; color: #999; margin-top: 8px; }
+        #fileInput { display: none; }
+        .file-list { margin-top: 16px; }
+        .file-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #f0f7ff; border-radius: 6px; margin-bottom: 6px; font-size: 14px; }
+        .file-item .remove { margin-left: auto; cursor: pointer; color: #e74c3c; font-weight: bold; }
+        .options { display: flex; flex-wrap: wrap; gap: 24px; margin: 20px 0; }
+        .option-group label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; }
+        .format-group { display: flex; gap: 16px; }
+        .format-btn { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border: 2px solid #e0e0e0; border-radius: 8px; cursor: pointer; font-size: 14px; transition: all 0.2s; }
+        .format-btn:has(input:checked) { border-color: #3b82f6; background: #eff6ff; color: #1d4ed8; }
+        .format-btn input { display: none; }
+        .btn { background: #3b82f6; color: white; border: none; padding: 14px 32px; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; width: 100%; transition: background 0.2s; }
+        .btn:hover { background: #2563eb; }
+        .btn:disabled { background: #93c5fd; cursor: not-allowed; }
+        .loading { display: none; text-align: center; padding: 24px; }
+        .spinner { width: 40px; height: 40px; border: 4px solid #e0e9ff; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .loading p { color: #555; font-size: 14px; }
+        .loading .note { color: #888; font-size: 12px; margin-top: 6px; }
+        .results { display: none; }
+        .success-banner { background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 12px; }
+        .success-banner .check { font-size: 24px; }
+        .result-file { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 16px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+        .result-file .info { font-size: 14px; color: #555; margin-top: 2px; }
+        .dl-btn { background: #10b981; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; text-decoration: none; }
+        .dl-btn:hover { background: #059669; }
+        .error { display: none; background: #fef2f2; border: 1px solid #fca5a5; border-radius: 8px; padding: 16px; color: #dc2626; margin-top: 16px; font-size: 14px; }
+        .banks-info { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+        .bank-badge { background: #f0f4f8; border-radius: 6px; padding: 6px 12px; font-size: 13px; color: #444; }
+        .bank-badge.new { background: #fef3c7; color: #92400e; }
+    </style>
 </head>
 <body>
-    <nav class="navbar">
-        <div class="container">
-            <div class="nav-brand">
-                <a href="{{ url_for('index') }}" class="back-link">← Back to Tools</a>
-                <h1>⚡ OneShot Tools</h1>
-            </div>
+    <div class="header">
+        <div>
+            <a href="/">← Back to Tools</a>
+            <h1 style="margin-top:4px">📊 Bank Statement Converter</h1>
         </div>
-    </nav>
+    </div>
 
-    <main class="main-content">
-        <div class="container">
-            <div class="tool-header">
-                <div class="tool-icon-large">📊</div>
-                <h2>Bank Statement Converter</h2>
-                <p class="tool-subtitle">Convert PDF bank statements to Excel spreadsheets</p>
+    <div class="container">
+        <div class="card">
+            <h2>Convert PDF Bank Statements</h2>
+            <p class="subtitle">Upload one or more PDF bank statements. Dates, descriptions and amounts are extracted automatically.</p>
+
+            <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                <div class="icon">📁</div>
+                <p><strong>Click to upload</strong> or drag & drop PDFs here</p>
+                <p class="hint">Supports FNB, ABSA, Standard Bank • Multiple files allowed</p>
             </div>
+            <input type="file" id="fileInput" accept=".pdf" multiple>
 
-            <div class="converter-container">
-                <div class="upload-section">
-                    <form id="uploadForm" enctype="multipart/form-data">
-                        <div class="upload-area" id="uploadArea">
-                            <div class="upload-icon">📁</div>
-                            <h3>Drop PDF files here or click to browse</h3>
-                            <p>You can upload multiple PDF files at once</p>
-                            <input type="file" id="fileInput" name="files[]" accept=".pdf" multiple style="display: none;">
-                            <button type="button" class="btn btn-secondary" onclick="document.getElementById('fileInput').click()">
-                                Select Files
-                            </button>
-                        </div>
+            <div class="file-list" id="fileList"></div>
 
-                        <div id="fileList" class="file-list"></div>
-
-                        <div class="options-section">
-                            <h4>Conversion Options</h4>
-                            
-                            <div class="option-group">
-                                <label class="option-label">Output Format:</label>
-                                <div class="radio-group">
-                                    <label class="radio-label">
-                                        <input type="radio" id="formatExcel" name="output_format" value="excel" checked>
-                                        <span>Excel (.xlsx)</span>
-                                    </label>
-                                    <label class="radio-label">
-                                        <input type="radio" id="formatCSV" name="output_format" value="csv">
-                                        <span>CSV (.csv)</span>
-                                    </label>
-                                </div>
-                            </div>
-                            
-                            <div class="option-group">
-                                <label class="option-label" for="statementYear">Statement Year:</label>
-                                <select id="statementYear" name="statement_year" class="year-select">
-                                    <option value="auto">Auto-detect</option>
-                                </select>
-                                <p class="option-help" style="margin-top: 5px; font-size: 0.85em;">
-                                    Select the year if auto-detection is incorrect
-                                </p>
-                            </div>
-                            
-                            <div class="option-group">
-                                <label class="option-label" for="pdfPassword">PDF Password (if protected):</label>
-                                <input type="password" id="pdfPassword" name="pdf_password" class="password-input" placeholder="Leave blank if not password-protected">
-                                <p class="option-help" style="margin-top: 5px; font-size: 0.85em;">
-                                    Enter password only if your PDF is password-protected
-                                </p>
-                            </div>
-                            
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="invertAmounts" name="invert_amounts">
-                                <span>Invert amounts (positive ↔ negative)</span>
-                            </label>
-                            <p class="option-help">
-                                Check this if you want to flip all amounts from positive to negative or vice versa
-                            </p>
-                        </div>
-
-                        <button type="submit" id="convertBtn" class="btn btn-primary btn-large" disabled>
-                            <span id="convertBtnText">Convert to Excel</span>
-                        </button>
-                    </form>
-                </div>
-
-                <div id="results" class="results-section" style="display: none;">
-                    <h3>✅ Conversion Complete!</h3>
-                    <div id="resultsContent"></div>
-                </div>
-
-                <div id="loading" class="loading-section" style="display: none;">
-                    <div class="spinner"></div>
-                    <p>Processing your files...</p>
-                </div>
-
-                <div id="error" class="error-section" style="display: none;">
-                    <h3>❌ Error</h3>
-                    <p id="errorMessage"></p>
-                    <button class="btn btn-secondary" onclick="location.reload()">Try Again</button>
-                </div>
-            </div>
-
-            <div class="info-section">
-                <h3>How it works</h3>
-                <div class="steps">
-                    <div class="step">
-                        <div class="step-number">1</div>
-                        <div class="step-content">
-                            <h4>Upload PDF Files</h4>
-                            <p>Select one or multiple PDF bank statements from your computer</p>
-                        </div>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">2</div>
-                        <div class="step-content">
-                            <h4>Choose Options</h4>
-                            <p>Optionally invert amounts if needed for your accounting system</p>
-                        </div>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">3</div>
-                        <div class="step-content">
-                            <h4>Download File</h4>
-                            <p>Get your converted Excel or CSV file(s) with Date, Description, and Amount columns</p>
-                        </div>
+            <div class="options">
+                <div class="option-group">
+                    <strong style="font-size:14px;display:block;margin-bottom:8px">Output Format</strong>
+                    <div class="format-group">
+                        <label class="format-btn">
+                            <input type="radio" name="format" value="xlsx" checked>
+                            📊 Excel (.xlsx)
+                        </label>
+                        <label class="format-btn">
+                            <input type="radio" name="format" value="csv">
+                            📄 CSV (.csv)
+                        </label>
                     </div>
                 </div>
-
-                <div class="supported-formats">
-                    <h4>Supported Banks</h4>
-                    <p><strong>✅ FNB</strong> - First National Bank</p>
-                    <p><strong>✅ ABSA</strong> - Absa Bank</p>
-                    <p><strong>✅ Standard Bank</strong> - Standard Bank of South Africa</p>
-                    <p style="margin-top: 10px; font-size: 0.9em;">Bank format automatically detected from PDF</p>
+                <div class="option-group" style="margin-top:8px">
+                    <label>
+                        <input type="checkbox" id="invertAmounts">
+                        Invert amounts (flip +/-)
+                    </label>
                 </div>
             </div>
-        </div>
-    </main>
 
-    <footer class="footer">
-        <div class="container">
-            <p>&copy; 2024 OneShot Tools. Built for productivity.</p>
-        </div>
-    </footer>
+            <button class="btn" id="convertBtn" onclick="startConvert()" disabled>
+                Convert Statement
+            </button>
 
-    <script src="{{ url_for('static', filename='js/converter.js') }}"></script>
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p id="loadingMsg">Converting your statement...</p>
+                <p class="note" id="loadingNote"></p>
+            </div>
+
+            <div class="error" id="errorBox"></div>
+        </div>
+
+        <div class="card results" id="results">
+            <div class="success-banner">
+                <span class="check">✅</span>
+                <div>
+                    <strong id="successTitle">Conversion complete!</strong>
+                    <div id="successDetail" style="font-size:13px;color:#555;margin-top:2px"></div>
+                </div>
+            </div>
+            <div id="downloadLinks"></div>
+        </div>
+
+        <div class="card" style="background:#f8fbff">
+            <strong>Supported Banks</strong>
+            <div class="banks-info">
+                <span class="bank-badge">✅ FNB</span>
+                <span class="bank-badge">✅ ABSA (text-based)</span>
+                <span class="bank-badge new">✨ ABSA Tjekrekeningstaat (image-based)</span>
+                <span class="bank-badge">✅ Standard Bank</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFiles = [];
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+
+        dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            addFiles([...e.dataTransfer.files]);
+        });
+
+        fileInput.addEventListener('change', () => addFiles([...fileInput.files]));
+
+        function addFiles(files) {
+            files.filter(f => f.name.endsWith('.pdf')).forEach(f => {
+                if (!selectedFiles.find(sf => sf.name === f.name)) selectedFiles.push(f);
+            });
+            renderFileList();
+        }
+
+        function removeFile(name) {
+            selectedFiles = selectedFiles.filter(f => f.name !== name);
+            renderFileList();
+        }
+
+        function renderFileList() {
+            const list = document.getElementById('fileList');
+            list.innerHTML = selectedFiles.map(f => `
+                <div class="file-item">
+                    📄 ${f.name} <span style="color:#999;font-size:12px">(${(f.size/1024).toFixed(0)} KB)</span>
+                    <span class="remove" onclick="removeFile('${f.name}')">✕</span>
+                </div>`).join('');
+            document.getElementById('convertBtn').disabled = selectedFiles.length === 0;
+        }
+
+        async function startConvert() {
+            const btn = document.getElementById('convertBtn');
+            const loading = document.getElementById('loading');
+            const errorBox = document.getElementById('errorBox');
+            const results = document.getElementById('results');
+            const format = document.querySelector('input[name="format"]:checked').value;
+
+            btn.disabled = true;
+            loading.style.display = 'block';
+            errorBox.style.display = 'none';
+            results.style.display = 'none';
+
+            // Show extra note for image-based PDFs (they take longer)
+            document.getElementById('loadingMsg').textContent = 'Converting your statement...';
+            document.getElementById('loadingNote').textContent = 'Image-based statements use AI vision and may take 20–60 seconds per file.';
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('files[]', f));
+            formData.append('invert_amounts', document.getElementById('invertAmounts').checked);
+            formData.append('output_format', format);
+
+            try {
+                const resp = await fetch('/convert', { method: 'POST', body: formData });
+                const data = await resp.json();
+
+                loading.style.display = 'none';
+
+                if (!resp.ok || data.error) throw new Error(data.error || 'Conversion failed');
+
+                showResults(data, format);
+
+            } catch (err) {
+                loading.style.display = 'none';
+                errorBox.style.display = 'block';
+                errorBox.textContent = '❌ ' + err.message;
+                btn.disabled = false;
+            }
+        }
+
+        function downloadB64(b64data, filename, mime) {
+            const bytes = atob(b64data);
+            const arr = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+            const blob = new Blob([arr], { type: mime });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = filename; a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        function showResults(data, format) {
+            const results = document.getElementById('results');
+            const links = document.getElementById('downloadLinks');
+            const mime = format === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+            results.style.display = 'block';
+
+            if (data.multiple) {
+                document.getElementById('successTitle').textContent = `${data.files.length} files converted!`;
+                document.getElementById('successDetail').textContent = `${data.total_transactions} transactions total`;
+
+                links.innerHTML = data.files.map(f => `
+                    <div class="result-file">
+                        <div>
+                            <strong>${f.output}</strong>
+                            <div class="info">${f.transactions} transactions</div>
+                        </div>
+                        <button class="dl-btn" onclick="downloadB64('${f.file_data}','${f.output}','${mime}')">⬇ Download</button>
+                    </div>`).join('') + `
+                    <div class="result-file" style="background:#fffbeb;border-color:#fcd34d">
+                        <div>
+                            <strong>📦 ${data.combined_file}</strong>
+                            <div class="info">All ${data.total_transactions} transactions combined</div>
+                        </div>
+                        <button class="dl-btn" onclick="downloadB64('${data.combined_data}','${data.combined_file}','${mime}')">⬇ Download All</button>
+                    </div>`;
+            } else {
+                document.getElementById('successTitle').textContent = 'Conversion complete!';
+                document.getElementById('successDetail').textContent = `${data.transactions} transactions extracted`;
+                links.innerHTML = `
+                    <div class="result-file">
+                        <div>
+                            <strong>${data.file}</strong>
+                            <div class="info">${data.transactions} transactions</div>
+                        </div>
+                        <button class="dl-btn" onclick="downloadB64('${data.file_data}','${data.file}','${mime}')">⬇ Download</button>
+                    </div>`;
+            }
+
+            document.getElementById('convertBtn').disabled = false;
+        }
+    </script>
 </body>
 </html>

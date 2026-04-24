@@ -1,1310 +1,534 @@
-#!/usr/bin/env python3
-"""
-OneShot Tools - Web Application
-A collection of useful productivity tools
-"""
-
 from flask import Flask, render_template, request, send_file, jsonify, send_from_directory
 import os
 import sys
 import re
 import csv
-import pypdfium2 as pdfium
+import base64
+import json
+import urllib.request
+import fitz  # PyMuPDF
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 import zipfile
 from io import BytesIO, StringIO
 
-# Get the absolute path of the current file
-basedir = os.path.abspath(os.path.dirname(__file__))
+app = Flask(__name__, template_folder='api/templates', static_folder='api/static')
 
-# Determine template and static directories
-# On Vercel, we're called from api/index.py, but app.py is at root
-# Templates are in api/templates
-template_dir = None
-static_dir = None
+UPLOAD_FOLDER = '/tmp/uploads'
+OUTPUT_FOLDER = '/tmp/outputs'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Try api/templates first (Vercel structure)
-if os.path.exists(os.path.join(basedir, 'api', 'templates')):
-    template_dir = os.path.join(basedir, 'api', 'templates')
-    static_dir = os.path.join(basedir, 'api', 'static')
-# Try templates at root (local development)
-elif os.path.exists(os.path.join(basedir, 'templates')):
-    template_dir = os.path.join(basedir, 'templates')
-    static_dir = os.path.join(basedir, 'static')
-# Last resort: check if we're in parent of api folder
-elif os.path.exists(os.path.join(os.path.dirname(basedir), 'api', 'templates')):
-    parent = os.path.dirname(basedir)
-    template_dir = os.path.join(parent, 'api', 'templates')
-    static_dir = os.path.join(parent, 'api', 'static')
-else:
-    # Default fallback
-    template_dir = os.path.join(basedir, 'templates')
-    static_dir = os.path.join(basedir, 'static')
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB
 
-# Create Flask app with explicit template and static paths
-app = Flask(__name__,
-            template_folder=template_dir,
-            static_folder=static_dir)
-            
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max file size
+# ─────────────────────────────────────────────
+# ABSA CHARACTER DECODING (for old-style PDFs)
+# ─────────────────────────────────────────────
 
-# Use /tmp for Vercel deployment (writable directory)
-import tempfile
-app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
-app.config['OUTPUT_FOLDER'] = tempfile.gettempdir()
+ABSA_CHAR_MAP = {
+    # Digits
+    'ð': '0', 'ñ': '1', 'ò': '2', 'ó': '3', 'ô': '4',
+    'õ': '5', 'ö': '6', '÷': '7', 'ø': '8', 'ù': '9',
+    # Punctuation/special
+    'a': '/', 'k': '.', 'K': '.', '@': ' ', '`': '-', 'z': ':',
+    '\\': '*', 'm': 'j',
+    # Control chars
+    '\x81': ' ', '\x82': 'b', '\x83': 'c', '\x84': 'o', '\x85': 'l',
+    '\x86': 'i', '\x87': 'g', '\x88': 'h', '\x89': 'n', '\x8a': 'j',
+    '\x8b': 'k', '\x8c': 'w', '\x8d': 'd', '\x8e': 'f', '\x8f': 'p',
+    '\x92': 'a', '\x95': 'l', '\x99': 'r',
+    # Uppercase
+    'Á': 'A', 'Â': 'B', 'Ã': 'C', 'Ä': 'D', 'Å': 'E', 'Æ': 'F',
+    'Ç': 'G', 'È': 'H', 'É': 'I', 'Ê': 'J', 'Ë': 'K', 'Ì': 'L',
+    'Í': 'M', 'Î': 'N', 'Ï': 'O', 'Ñ': 'P', 'Ò': 'Q', 'Ó': 'R',
+    'Ô': 'S', 'Õ': 'T', 'Ö': 'U', '×': 'V', 'Ø': 'W', 'Ù': 'X',
+    'Ú': 'Y', 'Û': 'Z',
+    # Lowercase
+    '¢': 'e', '£': 't', '¤': 'a', '¥': 'r', '¦': 'w', '§': 'y',
+    '¨': 'n', '©': 'o', 'ª': 'i', '«': 'u', '¬': 's', '\xad': 'd',
+    '®': 'l', '¯': 'c', '°': 'f', '±': 'h', '²': 'm', '³': 'p',
+    '´': 'g', 'µ': 'b', '¶': 'v', '·': 'k', '¸': 'x', '¹': 'j',
+    'º': 'q', '»': 'z',
+}
 
-# Ensure folders exist
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+ABSA_WORD_CORRECTIONS = {
+    'Abs/': 'Absa', 'B/n': 'Bank', 'B/nk': 'Bank',
+    'P/rtners': 'Partners', 'P/rtner': 'Partner',
+    'Ab/qulusi': 'Abaqulusi', 'S/rsef': 'Sarsef',
+    'C/sh': 'Cash', 'Petty C/sh': 'Petty Cash',
+    'P/r.ing': 'Parking', 'P/r.i': 'Parki',
+    'G/s': 'Gas', 'Zulu G/s': 'Zulu Gas',
+    'M/r.r/j': 'Markray', 'Pr M/r.r/j': 'Pr Markray',
+    'Contr/.tors': 'Contractors', 'Ms Contr/ctors': 'Ms Contractors',
+    'C .usel': 'Cousel', 'Bl/dsy': 'Bladsy',
+    'v/n': 'van', 'D/tuj': 'Datum',
+    'Tr/ns/.sies': 'Transaksies', 'Tr/ns/.siebes.rywing': 'Transaksiebeskrywing',
+    'Bes.rywing': 'Beskrywing', '.oste': 'Koste',
+    'Debietbedr/g': 'Debietbedrag', '.redietbedr/g': 'Kredietbedrag',
+    'S/ldo': 'Saldo', 'Bl/dsy': 'Bladsy',
+    'Registr/sie': 'Registrasie', 'Bel/stingf/.tuur': 'Belastingfaktuur',
+    'Fin/nsiële': 'Finansiële', 'dienstevers./ffer': 'diensteverskkaffer',
+    '.redietvers./ffer': 'Kredietverskkaffer', 'Gej/gtigde': 'Gemagtigde',
+    'Beper.': 'Beperk', 'nojjer': 'nommer',
+    'Tje.re.ening': 'Tjekrekening', '.w/': 'Kwa',
+    'Pro Gu/rd': 'Pro Guard', '.9 Pro': 'K9 Pro',
+    'Psgojic': 'Psgkons', 'Psg.ons': 'Psgkons',
+    'Acb Gerd/': 'Acb Gerda', 'Gerd/': 'Gerda',
+    'Adjin': 'Admin', 'ADJIN': 'ADMIN',
+    'Mndeli': 'Mndelik', 'MNDL.S': 'MNDLKS',
+    'RE.-FOOI': 'REK-FOOI', '.REDIETRENTE': 'KREDIETRENTE',
+    '.ONTANTDEPOSITO': 'KONTANTDEPOSITO', 'TRANSA.SIE': 'TRANSAKSIE',
+    '.ONTA.': 'KONTAK', 'BESIGHEIDSBAN.': 'BESIGHEIDBANK',
+    'ABSA.CO.ZA': 'ABSA.CO.ZA',
+}
 
 def decode_absa_text(text):
-    """Decode garbled ABSA PDF text to readable characters"""
-    char_map = {
-        # Digits
-        'ð': '0', 'ñ': '1', 'ò': '2', 'ó': '3', 'ô': '4',
-        'õ': '5', 'ö': '6', '÷': '7', 'ø': '8', 'ù': '9',
-        
-        # Special characters
-        'a': '/', 'k': '.', 'K': '.', '@': ' ', '`': '-', 'z': ':',
-        '\\': '*', 'm': 'j',
-        
-        # Control characters (0x80-0x9F range) - lowercase letters
-        '\x81': 'a',
-        '\x82': 'b',
-        '\x83': 'c',
-        '\x84': 'o',
-        '\x85': 'e',
-        '\x86': 'i',
-        '\x87': 'g',
-        '\x88': 'h',
-        '\x89': 'i',
-        '\x8a': 'j',
-        '\x8b': 'k',
-        '\x8c': 'w',
-        '\x8d': 'd',
-        '\x8e': 'f',
-        '\x8f': 'p',
-        '\x90': 'v',
-        '\x91': 'm',
-        '\x92': 'a',
-        '\x93': 'r',
-        '\x94': 's',
-        '\x95': 'n',
-        '\x96': 'u',
-        '\x97': 'y',
-        '\x98': 'l',
-        '\x99': 'r',
-        
-        # Uppercase letters
-        'Á': 'A', 'Â': 'B', 'Ã': 'C', 'Ä': 'D', 'Å': 'E',
-        'Æ': 'F', 'Ç': 'G', 'È': 'H', 'É': 'I', 'Ê': 'J',
-        'Ë': 'K', 'Ì': 'L', 'Í': 'M', 'Î': 'N', 'Ï': 'O',
-        'Ñ': 'P', 'Ò': 'Q', 'Ó': 'R', 'Ô': 'S', 'Õ': 'T',
-        'Ö': 'U', '×': 'V', 'Ø': 'W', 'Ù': 'X', 'Ú': 'Y', 'Û': 'Z',
-        
-        # Lowercase letters (extended ASCII)
-        'â': 'S', 'ã': 'T', 'å': 'W', 'æ': 'H', 'ç': 'N', 'è': 'Y',
-        '¢': 'e', '£': 't', '¤': 'a', '¥': 'r', '¦': 'w', '§': 'x',
-        '¨': 'n', '©': 'o', 'ª': 'i', '«': 'u', '¬': 's', '­': 'd',
-        '®': 'l', '¯': 'c', '°': 'f', '±': 'h', '²': 'm', '³': 'p',
-        '´': 'g', 'µ': 'b', '¶': 'v', '·': 'k', '¸': 'x', '¹': 'j',
-        'º': 'q', '»': 'z',
-    }
-    
+    """Decode garbled ABSA PDF text using character map"""
     result = ''
     for char in text:
-        result += char_map.get(char, char)
+        result += ABSA_CHAR_MAP.get(char, char)
     return result
 
-def detect_bank_format(text):
-    """Detect if the statement is from FNB, ABSA, or Standard Bank"""
-    # Check for official bank identifiers first (more specific)
-    if 'FNB FUSION' in text.upper() or 'FIRST NATIONAL BANK' in text.upper():
-        return 'FNB'
-    elif 'STANDARD BANK' in text.upper():
-        return 'STANDARD_BANK'
-    elif 'ABSA BANK' in text or 'Absa Bank' in text:
+def apply_word_corrections(text):
+    """Apply known word-level corrections to ABSA descriptions"""
+    for wrong, right in ABSA_WORD_CORRECTIONS.items():
+        text = text.replace(wrong, right)
+    return text
+
+# ─────────────────────────────────────────────
+# PDF TYPE DETECTION
+# ─────────────────────────────────────────────
+
+def is_image_based_pdf(pdf_path):
+    """Return True if PDF pages contain images only (no text layer)"""
+    try:
+        doc = fitz.open(pdf_path)
+        for page in doc:
+            text = page.get_text()
+            if text.strip():
+                return False
+        return True
+    except Exception:
+        return True
+
+def get_page_images_b64(pdf_path):
+    """Extract each page as a base64 JPEG from an image-based PDF"""
+    doc = fitz.open(pdf_path)
+    images = []
+    for page in doc:
+        d = page.get_text('rawdict')
+        blocks = d.get('blocks', [])
+        if blocks and blocks[0].get('type') == 1:
+            # Embedded JPEG/image
+            img_bytes = blocks[0]['image']
+            images.append(base64.b64encode(img_bytes).decode())
+        else:
+            # Render page as image if no embedded image found
+            mat = fitz.Matrix(2, 2)
+            pix = page.get_pixmap(matrix=mat)
+            img_bytes = pix.tobytes('jpeg')
+            images.append(base64.b64encode(img_bytes).decode())
+    return images
+
+# ─────────────────────────────────────────────
+# VISION-BASED EXTRACTION (Claude API)
+# ─────────────────────────────────────────────
+
+VISION_SYSTEM_PROMPT = """You are a bank statement parser. Extract transactions from ABSA Tjekrekeningstaat (bank statement) images.
+
+Return ONLY a JSON array — no markdown, no explanation, no preamble.
+
+For each transaction row in the "U transaksies" table:
+- date: string in DD/MM/YYYY format
+- description: full description (merge main line + sub-line if present, separated by space)
+- amount: number (negative for debits/Debietbedrag, positive for credits/Kredietbedrag)
+
+The table columns are: Datum | Transaksiebeskrywing | Koste | [type] | Debietbedrag | Kredietbedrag | Saldo
+
+Numbers use period as decimal separator. Ignore "Saldo Oorgedra" (opening balance) rows.
+
+Example output:
+[{"date":"05/11/2025","description":"Digitale Betaal Dt Vereffenin Absa Bank Pr Markram Musi","amount":-920.00},{"date":"07/11/2025","description":"Digitale Betaal Kt Vereffenin Absa Bank Uys & Partners Huur","amount":37443.45}]"""
+
+def extract_via_vision(pdf_path):
+    """Use Claude vision API to extract transactions from image-based PDFs"""
+    images_b64 = get_page_images_b64(pdf_path)
+    all_transactions = []
+
+    for img_b64 in images_b64:
+        content = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": img_b64}
+            },
+            {
+                "type": "text",
+                "text": "Extract all transaction rows from this bank statement page. Return JSON array only."
+            }
+        ]
+
+        payload = json.dumps({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4000,
+            "system": VISION_SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": content}]
+        }).encode()
+
+        req = urllib.request.Request(
+            'https://api.anthropic.com/v1/messages',
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'anthropic-version': '2023-06-01'
+            }
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+                text = result['content'][0]['text'].strip()
+                # Strip any markdown fences if present
+                text = re.sub(r'^```(?:json)?\s*', '', text)
+                text = re.sub(r'\s*```$', '', text)
+                rows = json.loads(text)
+                all_transactions.extend(rows)
+        except Exception as e:
+            print(f"Vision API error: {e}", file=sys.stderr)
+            continue
+
+    # Convert to standard internal format: (date_str, description, amount_float)
+    transactions = []
+    for row in all_transactions:
+        try:
+            date_str = row.get('date', '').strip()
+            description = row.get('description', '').strip()
+            amount = float(row.get('amount', 0))
+            if date_str and description:
+                transactions.append((date_str, description, amount))
+        except (ValueError, TypeError):
+            continue
+
+    return transactions
+
+# ─────────────────────────────────────────────
+# TEXT-BASED EXTRACTION (FNB, Standard Bank, old ABSA)
+# ─────────────────────────────────────────────
+
+def detect_bank(text):
+    """Detect bank from PDF text"""
+    text_lower = text.lower()
+    if 'absa' in text_lower or 'tjekrekeningstaat' in text_lower:
         return 'ABSA'
-    # Fallback to less specific checks
-    elif 'FNB' in text.upper():
+    elif 'standard bank' in text_lower or 'standardbank' in text_lower:
+        return 'STANDARD'
+    elif 'fnb' in text_lower or 'first national bank' in text_lower:
         return 'FNB'
-    elif 'ABSA' in text.upper():
-        return 'ABSA'
-    # Default to FNB if unclear
     return 'FNB'
 
-def extract_transactions_from_absa(pdf_path, invert_amounts=False, statement_year='auto', password=''):
-    """Extract transaction data from ABSA bank statement PDF"""
-    
+def extract_fnb_transactions(text):
+    """Extract transactions from FNB bank statement text"""
     transactions = []
-    detected_year = None
-    
-    # Open the PDF (with password if provided)
-    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
-    
-    # Combine all pages into one text block to handle cross-page continuations
-    all_text = []
-    for page_num in range(len(pdf)):
-        page = pdf[page_num]
-        textpage = page.get_textpage()
-        text = textpage.get_text_range()
-        
-        # Decode the garbled text
-        text = decode_absa_text(text)
-        
-        # Extract year from statement period (first page only)
-        if page_num == 0 and not detected_year:
-            year_match = re.search(r'(\d{1,2})\s+\w+\s+(\d{4})\s+to', text)
-            if year_match:
-                detected_year = year_match.group(2)
-        
-        all_text.append(text)
-    
-    # Use override year if provided, otherwise use detected year
-    year_to_use = statement_year if statement_year != 'auto' else detected_year
-    
-    # Join all pages with a special marker so we know where page breaks are
-    combined_text = '\n'.join(all_text)
-    lines = combined_text.split('\n')
-    
-    # Look for transaction lines
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # ABSA date pattern: DD/MM/YYYY at start of line
-        date_pattern = r'^(\d{1,2}/\d{2}/\d{4})\s+'
-        
-        match = re.match(date_pattern, line)
-        if match:
-            date_str = match.group(1)
-            
-            # Extract the rest of the line after the date
-            remainder = line[len(date_str):].strip()
-            
-            # Get description (everything before the amounts)
-            description_parts = []
-            
-            # First part of description is on this line
-            desc_match = re.match(r'^([A-Za-z\s:]+)', remainder)
-            if desc_match:
-                description_parts.append(desc_match.group(1).strip())
-            
-            # Check for continuation lines (can cross page boundaries!)
-            j = i + 1
-            continuation_count = 0
-            consecutive_non_continuation = 0
-            max_continuations = 10
-            
-            while j < len(lines) and continuation_count < max_continuations:
-                next_line = lines[j].strip()
-                
-                # Stop if it's a new date line
-                if re.match(date_pattern, next_line):
-                    break
-                
-                # Stop if it's empty
-                if not next_line:
-                    j += 1
-                    consecutive_non_continuation += 1
-                    if consecutive_non_continuation > 30:  # Too many empty lines
-                        break
-                    continue
-                
-                # Check if line contains descriptive text
-                has_text = re.search(r'[A-Za-z]{3,}', next_line)
-                
-                if has_text:
-                    # Filter out metadata/header/footer lines
-                    if any(kw in next_line for kw in ['Charge Statement Detail', 'Se Ttiine', 'MEiiectire', 'Cheae accant', 'Cheae Accant', 'YUäX VXICITG', 'SIXAC', 'QRIV STXEET', 'WXYHEID', '41-0214-4229', '197', '3100', 'Xetarn aooreee', 'Accant Tne', 'Stateent n', 'WAT reg n', 'Urerorait', 'Deecritin Charge Debit Aant', 'Ieeaeo', 'VXICITG VRAT', 'ITTEXEST XATE', 'ITCRäDED', 'CHAXGE:', 'ADSITISTXATIUT', 'CASH DEVUSIT', 'SINED', 'SEXWICE', 'TXATSACTIUT', 'Date Traneactin', 'SVXUVE', 'Bana Riiteo', 'Aathrieeo Financia', 'Xegietereo Creoit', 'Xegietratin Taber', 'CSV001CW', 'traneactine Mcntinaeo', 'Vage', 'Tax Inrice', 'eSt/jp', 'Gener/l Enquiries', '08600', 'Uar Vriracn', 'Wieit abea', 'Baance', 'Accant Saarn', 'Yar traneactine']):
-                        # Metadata - skip and increment non-continuation counter
-                        consecutive_non_continuation += 1
-                        # If we've hit too many non-continuation lines, stop
-                        if consecutive_non_continuation > 10:
-                            break
-                        j += 1
-                        continue
-                    else:
-                        # Real continuation line
-                        description_parts.append(next_line)
-                        continuation_count += 1
-                        consecutive_non_continuation = 0  # Reset counter
-                        
-                        # Stop if this line ends with a known ending pattern
-                        # Date patterns: "5 Aug", "5 March", "5 Sept", location names, etc.
-                        if re.search(r'(Njala|Garage|Holland\d+|\d+\s+(Aag|Aug|March|Sarch|Sept|Pa|Jan|Feb|Apr|May|Jun|Jul|Oct|Nov|Dec|Paye))$', next_line.strip(), re.IGNORECASE):
-                            # This is the end of the description
-                            j += 1
-                            break
-                    j += 1
-                else:
-                    # No text
-                    consecutive_non_continuation += 1
-                    if consecutive_non_continuation > 10:
-                        break
-                    j += 1
-            
-            # Update index to skip processed continuation lines
-            i = j - 1
-            
-            # Combine description parts
-            description = ' '.join(description_parts)
-            
-            # Clean up description
-            description = description.replace('Setteent', 'Settlement')
-            description = description.replace('Heaoiiice', 'Headoffice')
-            description = description.replace('Archire', 'Archive')
-            description = description.replace('Ttiiic', 'Notific')
-            description = description.replace('Ttiine', 'Notifyme')
-            description = description.replace('Vanent', 'Payment')
-            description = description.replace('Vane ', 'Payee ')
-            description = description.replace('Tranei', 'Transf')
-            description = description.replace('Varchaee', 'Purchase')
-            description = description.replace('Creoit', 'Credit')
-            description = description.replace('Externa', 'External')
-            description = description.replace('Digita', 'Digital')
-            description = description.replace('Snthn', 'Monthly')
-            description = description.replace('Traneactin', 'Transaction')
-            description = description.replace('Aoin', 'Admin')
-            description = description.replace('Vri Ui Vt Eai', 'Proof Of Pmt Email')
-            description = description.replace('Ve', 'Pos')
-            description = description.replace('Haro', 'Holland')
-            description = description.replace('Heebanajii', 'Holland')
-            description = description.replace('Eto', 'Edo')
-            description = description.replace('Ba Braght Frwaro', 'Bal Brought Forward')
-            description = description.replace('Abea Bana', 'Absa Bank')
-            description = description.replace('Sare', 'Sars')
-            description = description.replace('Stars', 'Sars')
-            description = description.replace('Traneier', 'Transfer')
-            description = description.replace('Sarch', 'March')
-            description = description.replace('Aag', 'Aug')
-            description = description.replace('Uct', 'Oct')
-            description = description.replace('Pan', 'Jan')  # Fixed: Pan -> Jan
-            description = description.replace('Caro T.', 'Card No.')
-            description = description.replace('Caro ', 'Card ')
-            description = description.replace('Stegene', 'Stegens')
-            description = description.replace('Stegen ', 'Stegens ')
-            description = description.replace('Wrnhe', 'Vryhe')
-            description = description.replace('Vryheio', 'Vryheid')
-            description = description.replace('MEii', 'Vyh')
-            description = description.replace('Stateent Detai', 'Statement Detail')
-            description = description.replace('Tmaa', 'Njala')
-            description = description.replace('Hbane', 'Hlobane')
-            description = description.replace('Deetiart', 'Desti')
-            description = description.replace('Vara', 'Park')
-            description = description.replace('Santa', 'Santam')
-            description = description.replace('Qieeie', 'Kommissie')
-            description = description.replace('Saio', 'Suid')
-            description = description.replace('äitanoer', 'Uitlander')
-            
-            # Complex merchant name fixes
-            description = description.replace('Sagg Ano Bean', 'Mugg And Bean')
-            description = description.replace('Sar Goen Posaa', 'Spur Golden Peak')  # Fixed
-            description = description.replace('Siririer Cnre', 'Mooirivier Conve')
-            description = description.replace('Sirrier Cnre', 'Mooirivier Conve')
-            description = description.replace('Vtch', 'Potch')
-            description = description.replace('Hhee', 'Wheel')
-            description = description.replace('Chain Wheel  P  Tyr', 'Champion Wheel & Tyr')
-            description = description.replace('Tnr', 'Tyr')
-            description = description.replace('Sirac Vr', 'Mirac Prop')
-            
-            # Bank/Digital payment specific fixes
-            description = description.replace('Cat 5 Dec', 'Comput 5 Dec')  # Fixed: Cat -> Comput
-            description = description.replace('Cat 5 March', 'Comput 5 March')
-            description = description.replace('Cat 4 Set', 'Comput 4 Sept')
-            
-            # Bank name fixes - order matters!
-            description = description.replace('Holland85344807104', 'Wesbank_fi85344807104')
-            description = description.replace('Ribertn', 'Liberty')
-            
-            # Find ALL amounts in the line
-            amount_pattern = r'(\d{1,3}(?:[\s,]\d{3})*\.\d{2})'
-            all_amounts = re.findall(amount_pattern, line)
-            
-            # Clean amounts
-            all_amounts = [a.replace(' ', ',') for a in all_amounts]
-            
-            # CRITICAL: Column structure is:
-            # Charge (col 3) | Debit (col 4) | Credit (col 5) | Balance (col 6)
-            
-            final_amount = None
-            
-            if len(all_amounts) == 0:
-                # No amounts - skip
-                i += 1
-                continue
-                
-            elif len(all_amounts) == 1:
-                # Only balance - skip (no debit or credit)
-                i += 1
-                continue
-                
-            elif len(all_amounts) == 2:
-                # Two amounts: Could be:
-                # 1. Charge + Balance (has A or T marker) - SKIP
-                # 2. Debit + Balance (has * marker or no marker) - EXTRACT as negative
-                # 3. Credit + Balance (Transf/Transfer in description) - EXTRACT as positive
-                
-                # Check if line has asterisk (bank charges) - these are debits
-                if '*' in line:
-                    # Bank charge: Debit + Balance - extract first as negative
-                    final_amount = '-' + all_amounts[0]
-                # Check if this is a credit transaction (Transfer/Credit without charge)
-                elif 'Credit' in description or 'Deposit' in description or 'Transf' in description or 'Transfer' in description:
-                    # Credit + Balance - extract first amount as positive
-                    final_amount = all_amounts[0]  # Positive
-                # Check if line has charge indicator (A or T)
-                elif ' A ' in line or ' T ' in line:
-                    # Charge + Balance - skip
-                    i += 1
-                    continue
-                else:
-                    # Debit + Balance (no marker) - extract as negative
-                    final_amount = '-' + all_amounts[0]
-                    
-            elif len(all_amounts) == 3:
-                # Charge + Debit/Credit + Balance
-                # Example: 15.00 T 944.27 342,616.71
-                # Middle amount (index 1) is the debit or credit
-                transaction_amount = all_amounts[1]
-                
-                # Determine if it's debit (negative) or credit (positive)
-                if 'Credit' in description or 'Deposit' in description:
-                    final_amount = transaction_amount  # Positive
-                else:
-                    final_amount = '-' + transaction_amount  # Negative
-                    
-            elif len(all_amounts) >= 4:
-                # Rare case: might have multiple amounts
-                # Assume second-to-last is transaction, last is balance
-                transaction_amount = all_amounts[-2]
-                
-                if 'Credit' in description or 'Deposit' in description:
-                    final_amount = transaction_amount  # Positive
-                else:
-                    final_amount = '-' + transaction_amount  # Negative
-            
-            # Skip if no valid transaction amount
-            if not final_amount:
-                i += 1
-                continue
-            
-            # Skip balance brought forward
-            if 'Brought Forward' in description or 'Braght Frwaro' in description:
-                i += 1
-                continue
-            
-            if description.strip():
-                # Apply inversion if requested
-                if invert_amounts:
-                    try:
-                        amount_val = float(final_amount.replace(',', ''))
-                        amount_val = -amount_val
-                        if amount_val >= 0:
-                            final_amount = f"{amount_val:,.2f}"
-                        else:
-                            final_amount = f"-{abs(amount_val):,.2f}"
-                    except:
-                        pass
-                
-                transactions.append({
-                    'Date': date_str,
-                    'Description': description.strip(),
-                    'Amount': final_amount
-                })
-        
-        i += 1
-    
-    return transactions
+    lines = text.split('\n')
+    date_pattern = re.compile(r'^\d{1,2}\s+\w+\s+\d{2,4}')
+    amount_pattern = re.compile(r'[-+]?\d{1,3}(?:,\d{3})*\.\d{2}')
 
-def extract_transactions_from_pdf(pdf_path, invert_amounts=False, statement_year='auto', password=''):
-    """Extract transaction data from bank statement PDF (supports FNB, ABSA, and Standard Bank)"""
-    
-    # Try to open the PDF with password
-    try:
-        if password:
-            pdf = pdfium.PdfDocument(pdf_path, password=password)
-        else:
-            pdf = pdfium.PdfDocument(pdf_path)
-    except Exception as e:
-        error_msg = str(e).lower()
-        if 'password' in error_msg or 'encrypted' in error_msg or 'incorrect' in error_msg:
-            raise Exception(f"Cannot open PDF: The password appears to be incorrect or the PDF encryption is not supported. Error: {str(e)}")
-        else:
-            raise Exception(f"Error opening PDF: {str(e)}")
-    
-    # Try to extract text from first page
-    try:
-        page = pdf[0]
-        textpage = page.get_textpage()
-        text = textpage.get_text_range()
-    except Exception as e:
-        # If text extraction fails after opening, might be permission issue
-        raise Exception(f"PDF opened but cannot extract text. This might indicate copy protection or permissions restrictions. Error: {str(e)}")
-    
-    # Check if PDF has extractable text
-    if len(text.strip()) < 50:
-        if password:
-            # Password was provided, PDF opened, but no text
-            # This suggests the PDF might have text but be copy-protected
-            return []
-        else:
-            # No password, might need one
-            return []
-    
-    bank_format = detect_bank_format(text)
-    
-    if bank_format == 'ABSA':
-        return extract_transactions_from_absa(pdf_path, invert_amounts, statement_year, password)
-    elif bank_format == 'STANDARD_BANK':
-        return extract_transactions_from_standard_bank(pdf_path, invert_amounts, statement_year, password)
-    else:
-        return extract_transactions_from_fnb(pdf_path, invert_amounts, statement_year, password)
-
-def extract_transactions_from_standard_bank(pdf_path, invert_amounts=False, statement_year='auto', password=''):
-    """Extract transaction data from Standard Bank statement PDF"""
-    
-    # Open the PDF to detect which format
-    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
-    first_page = pdf[0]
-    first_textpage = first_page.get_textpage()
-    first_text = first_textpage.get_text_range()
-    
-    # Detect format type
-    if 'BUSINESS CURRENT ACCOUNT' in first_text:
-        # Business format: Date format "01 02" (DD MM)
-        return extract_transactions_from_standard_bank_business(pdf_path, invert_amounts, statement_year, password)
-    else:
-        # Personal format: Date format "30 Oct 25"
-        return extract_transactions_from_standard_bank_personal(pdf_path, invert_amounts, statement_year, password)
-
-def extract_transactions_from_standard_bank_business(pdf_path, invert_amounts=False, statement_year='auto', password=''):
-    """Extract transaction data from Standard Bank Business Current Account statement"""
-    
-    transactions = []
-    detected_year = None
-    detected_month = None
-    
-    # Open the PDF
-    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
-    
-    # Combine all pages
-    all_text = []
-    for page_num in range(len(pdf)):
-        page = pdf[page_num]
-        textpage = page.get_textpage()
-        text = textpage.get_text_range()
-        
-        # Extract year and month from first page
-        if page_num == 0:
-            # Look for "Statement from 02 January 2026 to 31 January 2026"
-            year_match = re.search(r'Statement from.*?(\w+)\s+(\d{4})', text)
-            if year_match:
-                detected_month = year_match.group(1)
-                detected_year = year_match.group(2)
-        
-        all_text.append(text)
-    
-    # Use override year if provided
-    year_to_use = statement_year if statement_year != 'auto' else detected_year
-    
-    combined_text = '\n'.join(all_text)
-    lines = combined_text.split('\n')
-    
-    # Month name mapping
-    month_map = {
-        'January': '01', 'February': '02', 'March': '03', 'April': '04',
-        'May': '05', 'June': '06', 'July': '07', 'August': '08',
-        'September': '09', 'October': '10', 'November': '11', 'December': '12'
-    }
-    
-    statement_month_num = month_map.get(detected_month, '01') if detected_month else '01'
-    
-    # Process lines
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # Look for date pattern: "DD MM" followed by balance
-        # Balance can be in two formats:
-        # - US format: 62,243.22 (comma for thousands, period for decimal)
-        # - European format: 1.339.845,39 (period for thousands, comma for decimal)
-        # Pattern: date (2 numbers) followed by a balance number at the end
-        date_pattern = r'(\d{1,2}\s+\d{2})\s+[\d.,]+\s*$'
-        date_match = re.search(date_pattern, line)
-        
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        date_match = date_pattern.match(line)
         if date_match:
-            date_str = date_match.group(1)  # e.g., "01 02"
-            
-            # Parse date parts - Standard Bank Business format is "MM DD" in the PDF
-            # Example: "01 02" means Month 01 (January), Day 02
-            # We need to swap them for DD/MM/YYYY format
-            parts = date_str.split()
-            if len(parts) == 2:
-                month = parts[0].zfill(2)  # First number is MONTH
-                day = parts[1].zfill(2)    # Second number is DAY
-                
-                # Extract amount (number right before date, with possible minus sign)
-                # Pattern: amount (with optional -) followed by date and balance
-                # Amount can be: 140,00 or 2,321.91- or 1.500,00
-                amount_pattern = r'([\d.,]+\d{2}-?)\s+\d{1,2}\s+\d{2}\s+[\d.,]+\s*$'
-                amount_match = re.search(amount_pattern, line)
-                
-                if amount_match:
-                    amount = amount_match.group(1)
-                    
-                    # Get description (everything before the amount)
-                    # The pattern is: [Description] [Service Fee] [Amount] [Date] [Balance]
-                    # Find where the numbers start (service fee or amount)
-                    # Look for the LAST occurrence of a number sequence before the amount/date/balance
-                    
-                    # Remove amount, date, and balance from end
-                    temp_line = re.sub(r'[\d.,]+\d{2}-?\s+\d{1,2}\s+\d{2}\s+[\d.,]+\s*$', '', line).strip()
-                    
-                    # Also remove service fee if present (numbers at end like "9.30" or "20.00" or "##")
-                    temp_line = re.sub(r'\s+(##|[\d\.]+)\s*$', '', temp_line).strip()
-                    
-                    description = temp_line
-                    
-                    # Check if description continues on next line
-                    if i + 1 < len(lines):
-                        next_line = lines[i + 1].strip()
-                        # Next line is continuation if it:
-                        # 1. Doesn't end with a date pattern (DD MM Balance)
-                        # 2. Doesn't start with known headers
-                        # 3. Isn't empty
-                        has_transaction = re.search(r'\d{1,2}\s+\d{2}\s+[\d,]+\.\d{2}\s*$', next_line)
-                        is_header = re.match(r'^(Details|Fee|BALANCE|##|VRYHEID|PO BOX|Business|THE MEMBERS|Statement)', next_line)
-                        
-                        if not has_transaction and not is_header and next_line:
-                            description += ' ' + next_line
-                            i += 1  # Skip next line since we consumed it
-                    
-                    # Skip header rows and balance forward
-                    if 'BALANCE BROUGHT FORWARD' in description or 'Details Service' in description:
-                        i += 1
-                        continue
-                    
-                    # Clean up description - remove extra spaces
-                    description = ' '.join(description.split())
-                    
-                    # Clean up amount - handle negative sign and European format
-                    # European format: 1.500,00 (period=thousands, comma=decimal)
-                    # US format: 1,500.00 (comma=thousands, period=decimal)
-                    is_negative = amount.endswith('-')
-                    amount_clean = amount.replace('-', '')
-                    
-                    # Convert European format to US format if needed
-                    # Check if it uses comma as decimal separator (e.g., "140,00" or "1.500,00")
-                    if ',' in amount_clean:
-                        # European format detected
-                        # Remove thousand separators (periods) and convert comma to period
-                        amount_clean = amount_clean.replace('.', '').replace(',', '.')
-                    
-                    if is_negative:
-                        amount_clean = '-' + amount_clean
-                    
-                    # Apply inversion if requested
-                    if invert_amounts:
-                        try:
-                            amount_val = float(amount_clean.replace(',', ''))
-                            amount_val = -amount_val
-                            if amount_val >= 0:
-                                amount_clean = f"{amount_val:,.2f}"
-                            else:
-                                amount_clean = f"-{abs(amount_val):,.2f}"
-                        except:
-                            pass
-                    
-                    # Format date as DD/MM/YYYY
-                    formatted_date = f"{day}/{month}/{year_to_use}"
-                    
-                    transactions.append({
-                        'Date': formatted_date,
-                        'Description': description,
-                        'Amount': amount_clean
-                    })
-        
-        i += 1
-    
+            amounts = amount_pattern.findall(line)
+            if amounts:
+                date_str = parse_fnb_date(date_match.group())
+                description_start = date_match.end()
+                description = line[description_start:].strip()
+                for amt in amounts:
+                    description = description.replace(amt, '').strip()
+                amount_str = amounts[0].replace(',', '')
+                try:
+                    amount = float(amount_str)
+                    transactions.append((date_str, description, amount))
+                except ValueError:
+                    pass
     return transactions
 
-def extract_transactions_from_standard_bank_personal(pdf_path, invert_amounts=False, statement_year='auto', password=''):
-    """Extract transaction data from Standard Bank Personal statement (old format)"""
-    
+def parse_fnb_date(date_str):
+    """Parse FNB date format like '30 Oct 25' or '30 Oct 2025'"""
+    months = {
+        'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
+        'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
+        'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
+    }
+    parts = date_str.split()
+    if len(parts) >= 3:
+        day = parts[0].zfill(2)
+        month = months.get(parts[1], '01')
+        year = parts[2]
+        if len(year) == 2:
+            year_int = int(year)
+            year = f'20{year}' if year_int <= 50 else f'19{year}'
+        return f'{day}/{month}/{year}'
+    return date_str
+
+def extract_absa_transactions_text(text):
+    """Extract transactions from old-style ABSA PDF text (encoded chars)"""
+    decoded = decode_absa_text(text)
     transactions = []
-    detected_end_year = None
-    statement_start_month = None
-    statement_end_month = None
-    
-    # Open the PDF (with password if provided)
-    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
-    
-    # Combine all pages
-    all_text = []
-    for page_num in range(len(pdf)):
-        page = pdf[page_num]
-        textpage = page.get_textpage()
-        text = textpage.get_text_range()
-        
-        # Extract year and month range from first page
-        if page_num == 0:
-            # Look for "From: 30 Oct 25" and "To: 28 Jan 26"
-            from_match = re.search(r'From:\s+\d{1,2}\s+(\w+)\s+(\d{2})', text)
-            to_match = re.search(r'To:\s+\d{1,2}\s+(\w+)\s+(\d{2})', text)
-            
-            if to_match:
-                statement_end_month = to_match.group(1)
-                year_suffix = to_match.group(2)
-                detected_end_year = '20' + year_suffix
-            
-            if from_match:
-                statement_start_month = from_match.group(1)
-        
-        all_text.append(text)
-    
-    # Use override year if provided, otherwise use detected year
-    statement_end_year = statement_year if statement_year != 'auto' else detected_end_year
-    
-    combined_text = '\n'.join(all_text)
-    lines = combined_text.split('\n')
-    
-    # Process lines
+    lines = decoded.split('\n')
+    date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}')
+    amount_pattern = re.compile(r'\d{1,3}(?:,\d{3})*\.\d{2}')
+
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        
-        # Standard Bank date pattern: "30 Oct 25" or "01 Nov 25"
-        date_pattern = r'^(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2})\s+'
-        
-        match = re.match(date_pattern, line)
-        if match:
-            date_str = match.group(1)
-            
-            # Get description from this line (after date)
-            desc_parts = []
-            remainder = line[len(date_str):].strip()
-            if remainder and remainder != 'Date Description Payments Deposits Balance':
-                desc_parts.append(remainder)
-            
-            # Check next lines for description continuation and amount
-            j = i + 1
-            amount = None
-            
-            # Skip known metadata lines that are part of the transaction
-            metadata_keywords = [
-                'FEE:', 'IMMEDIATE PAYMENT', 'IB PAYMENT', 'CREDIT TRANSFER', 
-                'DEBIT TRANSFER', 'REAL TIME TRANSFER', 'ELECTRONIC TRF',
-                'INSURANCE PREMIUM', 'MONTHLY MANAGEMENT', 'SERVICE FEE'
-            ]
-            
-            while j < len(lines) and j < i + 5:  # Look ahead max 5 lines
-                next_line = lines[j].strip()
-                
-                if not next_line:
-                    j += 1
-                    continue
-                
-                # Check if this line is a new transaction (starts with date)
-                if re.match(date_pattern, next_line):
-                    break
-                
-                # Check if this line contains amount (has number with commas)
-                # Standard Bank format: either just deposit or -payment followed by balance
-                # Pattern: "-1,800.00 41,865.05" or "32,680.00 43,665.05"
-                amount_pattern = r'^(-?\d{1,3}(?:,\d{3})*\.\d{2})\s+\d{1,3}(?:,\d{3})*\.\d{2}$'
-                amount_match = re.search(amount_pattern, next_line)
-                
-                if amount_match:
-                    # This is the amount line
-                    amount = amount_match.group(1)
-                    j += 1
-                    break
-                else:
-                    # Check if it's a metadata line
-                    is_metadata = any(keyword in next_line for keyword in metadata_keywords)
-                    
-                    if not is_metadata and not next_line.startswith('ACC '):
-                        # This is a description continuation
-                        if len(next_line) > 3:
-                            desc_parts.append(next_line)
-                    j += 1
-            
-            # Update main index
-            i = j
-            
-            # Skip if no amount found
-            if not amount:
-                continue
-            
-            # Combine description
-            description = ' '.join(desc_parts).strip()
-            
-            # Skip opening balance
-            if 'OPENING BALANCE' in description.upper() or 'STATEMENT OPENING' in description.upper():
-                continue
-            
-            # Skip if description is empty
-            if not description or description == 'Date Description Payments Deposits Balance':
-                continue
-            
-            # Clean up description
-            description = description.replace('  ', ' ')
-            
-            # Convert date from "30 Oct 25" to "30/10/2025"
-            try:
-                # Parse the date string
-                month_map = {
-                    'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-                    'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
-                    'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
-                }
-                
-                # Month order for year rollover detection
-                month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-                
-                # Split "30 Oct 25" into parts
-                parts = date_str.split()
-                if len(parts) == 3:
-                    day = parts[0].zfill(2)
-                    month_name = parts[1]
-                    month = month_map.get(month_name, '01')
-                    
-                    # Determine year based on month
-                    # If transaction month comes before the end month, it's the previous year
-                    # Example: Statement "Oct 25 to Jan 26" - Oct/Nov/Dec are 2025, Jan is 2026
-                    if statement_end_year and statement_end_month and statement_start_month:
-                        end_month_idx = month_order.index(statement_end_month) if statement_end_month in month_order else 0
-                        curr_month_idx = month_order.index(month_name) if month_name in month_order else 0
-                        
-                        # If current month > end month, it's in the previous year
-                        if curr_month_idx > end_month_idx:
-                            year = str(int(statement_end_year) - 1)
-                        else:
-                            year = statement_end_year
-                    else:
-                        # Fallback to year from date string
-                        year = '20' + parts[2]
-                    
-                    date_str = f"{day}/{month}/{year}"
-            except:
-                # If conversion fails, keep original format
-                pass
-            
-            # Apply inversion if requested
-            if invert_amounts:
-                try:
-                    amount_val = float(amount.replace(',', ''))
-                    amount_val = -amount_val
-                    amount = f"{amount_val:,.2f}"
-                except:
-                    pass
-            
-            transactions.append({
-                'Date': date_str,
-                'Description': description,
-                'Amount': amount
-            })
-        else:
+        if not line:
             i += 1
-    
+            continue
+        date_match = date_pattern.match(line)
+        if date_match:
+            date_str = line[:10]
+            rest = line[10:].strip()
+            # Check next line for continuation
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not date_pattern.match(next_line):
+                    rest = rest + ' ' + next_line
+                    i += 1
+            amounts = amount_pattern.findall(rest)
+            if amounts:
+                description = rest
+                for amt in amounts:
+                    description = description.replace(amt, '').strip()
+                description = apply_word_corrections(description)
+                description = re.sub(r'\s+', ' ', description).strip()
+                amount_val = amounts[-1].replace(',', '')
+                try:
+                    amount = float(amount_val)
+                    # If there's a debit indicator, make negative
+                    if re.search(r'\bD\b|\bdebit\b', rest, re.IGNORECASE):
+                        amount = -abs(amount)
+                    transactions.append((date_str, description, amount))
+                except ValueError:
+                    pass
+        i += 1
     return transactions
 
-def extract_transactions_from_fnb(pdf_path, invert_amounts=False, statement_year='auto', password=''):
-    """Extract transaction data from FNB bank statement PDF"""
-    
+def extract_standard_bank_transactions(text):
+    """Extract transactions from Standard Bank statement text"""
     transactions = []
-    detected_year = None
-    
-    # Open the PDF (with password if provided)
-    pdf = pdfium.PdfDocument(pdf_path, password=password if password else None)
-    
-    # First, detect the year from first page
-    first_page = pdf[0]
-    first_textpage = first_page.get_textpage()
-    first_text = first_textpage.get_text_range()
-    
-    year_match = re.search(r'Statement Period.*?(\d{4})', first_text)
-    if year_match:
-        detected_year = year_match.group(1)
-    
-    # Use override year if provided, otherwise use detected year
-    year_to_use = statement_year if statement_year != 'auto' else detected_year
-    
-    # Process each page
-    for page_num in range(len(pdf)):
-        page = pdf[page_num]
-        textpage = page.get_textpage()
-        text = textpage.get_text_range()
-        
-        # Split into lines
-        lines = text.split('\n')
-        
-        # Look for transaction lines
-        for i, line in enumerate(lines):
-            # Pattern to match date at start of line (DD Mon format)
-            date_pattern = r'^(\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))\s+'
-            
-            match = re.match(date_pattern, line)
-            if match:
-                date_str = match.group(1)
-                
-                # Extract the rest of the line after the date
-                remainder = line[len(date_str):].strip()
-                
-                # Split remainder to get description and amount
-                parts = remainder.split()
-                
-                if len(parts) >= 2:
-                    # Find amount - looking for pattern with digits, commas, decimals
-                    amount_pattern = r'[\d,]+\.\d{2}(?:Cr|Dr)?'
-                    
-                    # FNB format can have:
-                    # Normal: [Description] [Amount] [Balance]
-                    # With charges: [Description] [Amount] [Balance] [BankCharge]
-                    
-                    # Search from the end of parts
-                    amount = None
-                    description_parts = []
-                    balance_found = False
-                    bank_charge_skipped = False
-                    
-                    for j in range(len(parts) - 1, -1, -1):
-                        part = parts[j]
-                        
-                        # Check if this looks like a monetary amount
-                        if re.match(amount_pattern, part):
-                            # First number from the right could be:
-                            # 1. Balance (if has Cr/Dr suffix and is large)
-                            # 2. Bank charge (if small and no suffix, like 1.50)
-                            
-                            if not balance_found and not amount:
-                                # Check if this is a small bank charge (typically < 100 and no Cr/Dr)
-                                # OR if it's the balance (has Cr/Dr)
-                                has_suffix = 'Cr' in part or 'Dr' in part
-                                try:
-                                    num_val = float(part.replace('Cr', '').replace('Dr', '').replace(',', ''))
-                                    is_small = num_val < 100
-                                except:
-                                    is_small = False
-                                
-                                if not has_suffix and is_small:
-                                    # This looks like a bank charge, skip it
-                                    bank_charge_skipped = True
-                                    continue
-                                else:
-                                    # This is the balance (last monetary value)
-                                    balance_found = True
-                                    continue
-                            elif balance_found and not amount:
-                                # This is the amount (second to last monetary value, or third if we skipped bank charge)
-                                amount = part
-                                # Everything before this is description
-                                description_parts = parts[:j]
-                                break
-                        
-                    # If we found an amount, save the transaction
-                    if amount:
-                        description = ' '.join(description_parts)
-                        
-                        # Handle empty descriptions
-                        if not description or description.strip() == '':
-                            description = '#Monthly Account Fee'
-                        
-                        # Convert date format from "01 Jun" to "01/06/2024"
-                        month_map = {
-                            'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-                            'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
-                            'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12'
-                        }
-                        
-                        date_parts = date_str.split()
-                        if len(date_parts) == 2:
-                            day = date_parts[0]
-                            month_abbr = date_parts[1]
-                            month = month_map.get(month_abbr, '01')
-                            formatted_date = f"{day}/{month}/{year_to_use}"
-                        else:
-                            formatted_date = date_str
-                        
-                        # Clean up amount - remove "Cr" suffix for credits
-                        is_credit = 'Cr' in amount
-                        amount_clean = amount.replace('Cr', '').replace('Dr', '')
-                        
-                        # If it's a debit (no Cr suffix), make it negative
-                        if not is_credit:
-                            amount_clean = '-' + amount_clean
-                        
-                        # Apply inversion if requested
-                        if invert_amounts:
-                            try:
-                                # Remove commas and convert to float
-                                amount_val = float(amount_clean.replace(',', ''))
-                                # Invert the sign
-                                amount_val = -amount_val
-                                # Format with commas
-                                if amount_val >= 0:
-                                    amount_clean = f"{amount_val:,.2f}"
-                                else:
-                                    amount_clean = f"-{abs(amount_val):,.2f}"
-                            except:
-                                pass
-                        
-                        transactions.append({
-                            'Date': formatted_date,
-                            'Description': description,
-                            'Amount': amount_clean
-                        })
-    
+    lines = text.split('\n')
+    date_pattern = re.compile(r'^\d{2}\s+\w{3}\s+\d{2}')
+    amount_pattern = re.compile(r'[-+]?\d{1,3}(?:,\d{3})*\.\d{2}')
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        date_match = date_pattern.match(line)
+        if date_match:
+            amounts = amount_pattern.findall(line)
+            if amounts:
+                date_str = parse_fnb_date(date_match.group())
+                description_start = date_match.end()
+                description = line[description_start:].strip()
+                for amt in amounts:
+                    description = description.replace(amt, '').strip()
+                amount_str = amounts[0].replace(',', '')
+                try:
+                    amount = float(amount_str)
+                    transactions.append((date_str, description, amount))
+                except ValueError:
+                    pass
     return transactions
+
+def extract_transactions_from_pdf(filepath, invert_amounts=False):
+    """Main extraction function — detects PDF type and uses correct method"""
+
+    # ── Image-based PDF: use Claude vision ──
+    if is_image_based_pdf(filepath):
+        print(f"[INFO] Image-based PDF detected: {filepath}", file=sys.stderr)
+        transactions = extract_via_vision(filepath)
+        if invert_amounts:
+            transactions = [(d, desc, -amt) for d, desc, amt in transactions]
+        return transactions
+
+    # ── Text-based PDF: use pypdfium2 or fitz ──
+    try:
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(filepath)
+        full_text = ''
+        for page in pdf:
+            textpage = page.get_textpage()
+            full_text += textpage.get_text_range() + '\n'
+    except Exception:
+        doc = fitz.open(filepath)
+        full_text = ''
+        for page in doc:
+            full_text += page.get_text() + '\n'
+
+    bank = detect_bank(full_text)
+    print(f"[INFO] Detected bank: {bank}", file=sys.stderr)
+
+    if bank == 'ABSA':
+        transactions = extract_absa_transactions_text(full_text)
+    elif bank == 'STANDARD':
+        transactions = extract_standard_bank_transactions(full_text)
+    else:
+        transactions = extract_fnb_transactions(full_text)
+
+    if invert_amounts:
+        transactions = [(d, desc, -amt) for d, desc, amt in transactions]
+
+    return transactions
+
+# ─────────────────────────────────────────────
+# OUTPUT FILE CREATION
+# ─────────────────────────────────────────────
 
 def create_excel_file(transactions, output_path):
-    """Create Excel file with extracted transactions"""
-    
+    """Create Excel file from transactions list"""
     wb = Workbook()
     ws = wb.active
-    ws.title = "Bank Statement"
-    
-    # Define headers
+    ws.title = "Transactions"
+
+    # Header
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
     headers = ['Date', 'Description', 'Amount']
-    
-    # Style for headers
-    header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
-    header_font = Font(bold=True, color='FFFFFF', size=12)
-    
-    # Write headers
-    for col_num, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_num, value=header)
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
         cell.fill = header_fill
         cell.font = header_font
-        cell.alignment = Alignment(horizontal='center', vertical='center')
-    
-    # Write transaction data
-    for row_num, transaction in enumerate(transactions, 2):
-        ws.cell(row=row_num, column=1, value=transaction['Date'])
-        ws.cell(row=row_num, column=2, value=transaction['Description'])
-        
-        # Convert amount to number for Excel
-        amount_str = transaction['Amount'].replace(',', '')
-        try:
-            amount_num = float(amount_str)
-            cell = ws.cell(row=row_num, column=3, value=amount_num)
-            # Format as currency
-            cell.number_format = '#,##0.00'
-        except:
-            ws.cell(row=row_num, column=3, value=transaction['Amount'])
-    
-    # Adjust column widths
-    ws.column_dimensions['A'].width = 12
-    ws.column_dimensions['B'].width = 50
+        cell.alignment = Alignment(horizontal='center')
+
+    # Data
+    for row_idx, (date_str, description, amount) in enumerate(transactions, 2):
+        ws.cell(row=row_idx, column=1, value=date_str)
+        ws.cell(row=row_idx, column=2, value=description)
+        amount_cell = ws.cell(row=row_idx, column=3, value=amount)
+        if amount < 0:
+            amount_cell.font = Font(color="C00000")
+
+    # Column widths
+    ws.column_dimensions['A'].width = 15
+    ws.column_dimensions['B'].width = 60
     ws.column_dimensions['C'].width = 15
-    
-    # Save workbook
+
     wb.save(output_path)
+
+def create_csv_file(transactions, output_path):
+    """Create CSV file from transactions list"""
+    with open(output_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Date', 'Description', 'Amount'])
+        for date_str, description, amount in transactions:
+            writer.writerow([date_str, description, amount])
+
+# ─────────────────────────────────────────────
+# FLASK ROUTES
+# ─────────────────────────────────────────────
 
 @app.route('/')
 def index():
-    """Homepage"""
-    try:
-        # Debug: Check if template exists
-        template_path = os.path.join(app.template_folder, 'index.html')
-        if not os.path.exists(template_path):
-            return f"Template not found at: {template_path}<br>Base dir: {basedir}<br>Template folder: {app.template_folder}<br>Files in dir: {os.listdir(basedir)}", 500
-        return render_template('index.html')
-    except Exception as e:
-        import traceback
-        return f"Error: {str(e)}<br><br>Traceback:<br><pre>{traceback.format_exc()}</pre><br>Template folder: {app.template_folder}<br>Base dir: {basedir}", 500
-
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'message': 'OneShot Tools is running',
-        'python_version': sys.version
-    })
+    return render_template('index.html')
 
 @app.route('/tools/bank-statement-converter')
 def bank_statement_converter():
-    """Bank Statement Converter Tool"""
     return render_template('bank_statement_converter.html')
 
 @app.route('/tools/tax-optimizer')
 def tax_optimizer():
-    """SA Tax Split Optimizer Tool"""
     return render_template('tax_optimizer.html')
 
 @app.route('/convert', methods=['POST'])
 def convert():
     """Handle PDF conversion"""
     try:
-        # Check if files were uploaded
         if 'files[]' not in request.files:
             return jsonify({'error': 'No files uploaded'}), 400
-        
+
         files = request.files.getlist('files[]')
-        
         if not files or files[0].filename == '':
             return jsonify({'error': 'No files selected'}), 400
-        
-        # Get invert option - FormData sends boolean as string
-        invert_amounts_str = request.form.get('invert_amounts', 'false')
-        invert_amounts = invert_amounts_str.lower() == 'true'
-        
-        # Get output format option
-        output_format = request.form.get('output_format', 'excel')  # Default to excel
-        
-        # Get statement year option
-        statement_year = request.form.get('statement_year', 'auto')  # Default to auto
-        
-        # Get PDF password if provided
-        pdf_password = request.form.get('pdf_password', '')  # Default to empty string
-        
-        # Debug: log the settings
-        print(f"DEBUG: invert_amounts_str = '{invert_amounts_str}', invert_amounts = {invert_amounts}")
-        print(f"DEBUG: output_format = '{output_format}'")
-        print(f"DEBUG: statement_year = '{statement_year}'")
-        print(f"DEBUG: pdf_password = {'***' if pdf_password else 'None'}")
-        
-        # Process all files
+
+        invert_amounts = request.form.get('invert_amounts') == 'true'
+        output_format = request.form.get('output_format', 'xlsx')  # 'xlsx' or 'csv'
+
         output_files = []
         all_transactions = []
-        file_data = {}  # Store file data in memory
-        
+
         for file in files:
             if file and file.filename.endswith('.pdf'):
-                # Save uploaded file temporarily
                 filename = file.filename
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
-                
-                # Try to extract transactions with optional year override and password
-                try:
-                    transactions = extract_transactions_from_pdf(filepath, invert_amounts, statement_year, pdf_password)
-                except Exception as e:
-                    # Clean up uploaded file
-                    os.remove(filepath)
-                    
-                    # Check if it's a password error
-                    if 'password' in str(e).lower() or 'encrypted' in str(e).lower():
-                        return jsonify({
-                            'error': f'Unable to open "{filename}". The PDF appears to be password-protected. Please enter the correct password in the "PDF Password" field.'
-                        }), 400
-                    else:
-                        # Generic error
-                        return jsonify({
-                            'error': f'Error processing "{filename}": {str(e)}'
-                        }), 400
-                
-                # Check if PDF is scanned/image-based or password issue
-                if len(transactions) == 0:
-                    # Clean up uploaded file
-                    os.remove(filepath)
-                    
-                    # Provide more helpful error message based on context
-                    if pdf_password:
-                        # Password was provided but no text extracted
-                        return jsonify({
-                            'error': f'Unable to extract text from "{filename}". This could mean: (1) The password is incorrect, (2) The PDF is scanned/image-based, or (3) The PDF format is not supported. Please verify the password and ensure the PDF has selectable text.'
-                        }), 400
-                    else:
-                        # No password provided
-                        return jsonify({
-                            'error': f'Unable to extract text from "{filename}". This appears to be a scanned/image-based PDF or may be password-protected. If password-protected, please enter the password in the "PDF Password" field. Otherwise, ensure your PDF has selectable text.'
-                        }), 400
-                
+
+                transactions = extract_transactions_from_pdf(filepath, invert_amounts)
                 all_transactions.extend(transactions)
-                
-                # Create output file based on format
+
                 if output_format == 'csv':
                     output_filename = filename.replace('.pdf', '_transactions.csv')
-                    # Create CSV in memory
-                    csv_buffer = StringIO()
-                    csv_writer = csv.writer(csv_buffer)
-                    
-                    # Write headers
-                    csv_writer.writerow(['Date', 'Description', 'Amount'])
-                    
-                    # Write data
-                    for transaction in transactions:
-                        csv_writer.writerow([
-                            transaction['Date'],
-                            transaction['Description'],
-                            transaction['Amount']
-                        ])
-                    
-                    # Store in memory as base64
-                    import base64
-                    csv_content = csv_buffer.getvalue()
-                    file_data[output_filename] = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
-                    
-                else:  # Excel format
+                    output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+                    create_csv_file(transactions, output_path)
+                else:
                     output_filename = filename.replace('.pdf', '_transactions.xlsx')
-                    
-                    # Create workbook
-                    wb = Workbook()
-                    ws = wb.active
-                    ws.title = "Bank Statement"
-                    
-                    # Headers
-                    headers = ['Date', 'Description', 'Amount']
-                    header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
-                    header_font = Font(bold=True, color='FFFFFF', size=12)
-                    
-                    for col_num, header in enumerate(headers, 1):
-                        cell = ws.cell(row=1, column=col_num, value=header)
-                        cell.fill = header_fill
-                        cell.font = header_font
-                        cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-                    # Data
-                    for row_num, transaction in enumerate(transactions, 2):
-                        ws.cell(row=row_num, column=1, value=transaction['Date'])
-                        ws.cell(row=row_num, column=2, value=transaction['Description'])
-                        
-                        amount_str = transaction['Amount'].replace(',', '')
-                        try:
-                            amount_num = float(amount_str)
-                            cell = ws.cell(row=row_num, column=3, value=amount_num)
-                            cell.number_format = '#,##0.00'
-                        except:
-                            ws.cell(row=row_num, column=3, value=transaction['Amount'])
-                    
-                    # Column widths
-                    ws.column_dimensions['A'].width = 12
-                    ws.column_dimensions['B'].width = 50
-                    ws.column_dimensions['C'].width = 15
-                    
-                    # Save to BytesIO
-                    excel_buffer = BytesIO()
-                    wb.save(excel_buffer)
-                    excel_buffer.seek(0)
-                    
-                    # Store in memory
-                    import base64
-                    file_data[output_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
-                
+                    output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+                    create_excel_file(transactions, output_path)
+
+                # Read file bytes for response
+                with open(output_path, 'rb') as f:
+                    file_bytes = f.read()
+
                 output_files.append({
                     'original': filename,
                     'output': output_filename,
-                    'transactions': len(transactions)
+                    'transactions': len(transactions),
+                    'file_data': base64.b64encode(file_bytes).decode()
                 })
-                
-                # Clean up uploaded file
+
                 os.remove(filepath)
-        
-        # If multiple files, create a combined file and a ZIP
+                os.remove(output_path)
+
+        # Multiple files: also create combined
         if len(output_files) > 1:
-            # Create combined file based on format
             if output_format == 'csv':
-                combined_filename = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
-                
-                csv_buffer = StringIO()
-                csv_writer = csv.writer(csv_buffer)
-                
-                # Write headers
-                csv_writer.writerow(['Date', 'Description', 'Amount'])
-                
-                # Write all transactions
-                for transaction in all_transactions:
-                    csv_writer.writerow([
-                        transaction['Date'],
-                        transaction['Description'],
-                        transaction['Amount']
-                    ])
-                
-                import base64
-                csv_content = csv_buffer.getvalue()
-                file_data[combined_filename] = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
-                
-            else:  # Excel format
-                combined_filename = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
-                
-                wb = Workbook()
-                ws = wb.active
-                ws.title = "Bank Statement"
-                
-                headers = ['Date', 'Description', 'Amount']
-                header_fill = PatternFill(start_color='366092', end_color='366092', fill_type='solid')
-                header_font = Font(bold=True, color='FFFFFF', size=12)
-                
-                for col_num, header in enumerate(headers, 1):
-                    cell = ws.cell(row=1, column=col_num, value=header)
-                    cell.fill = header_fill
-                    cell.font = header_font
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                
-                for row_num, transaction in enumerate(all_transactions, 2):
-                    ws.cell(row=row_num, column=1, value=transaction['Date'])
-                    ws.cell(row=row_num, column=2, value=transaction['Description'])
-                    
-                    amount_str = transaction['Amount'].replace(',', '')
-                    try:
-                        amount_num = float(amount_str)
-                        cell = ws.cell(row=row_num, column=3, value=amount_num)
-                        cell.number_format = '#,##0.00'
-                    except:
-                        ws.cell(row=row_num, column=3, value=transaction['Amount'])
-                
-                ws.column_dimensions['A'].width = 12
-                ws.column_dimensions['B'].width = 50
-                ws.column_dimensions['C'].width = 15
-                
-                excel_buffer = BytesIO()
-                wb.save(excel_buffer)
-                excel_buffer.seek(0)
-                
-                import base64
-                file_data[combined_filename] = base64.b64encode(excel_buffer.read()).decode('utf-8')
-            
-            # Create ZIP in memory
-            zip_filename = f'all_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
-            zip_buffer = BytesIO()
-            
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                # Add combined file
-                zipf.writestr(combined_filename, base64.b64decode(file_data[combined_filename]))
-                
-                # Add individual files
-                for output_file in output_files:
-                    zipf.writestr(output_file['output'], base64.b64decode(file_data[output_file['output']]))
-            
-            zip_buffer.seek(0)
-            file_data[zip_filename] = base64.b64encode(zip_buffer.read()).decode('utf-8')
-            
+                combined_name = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+                combined_path = os.path.join(app.config['OUTPUT_FOLDER'], combined_name)
+                create_csv_file(all_transactions, combined_path)
+            else:
+                combined_name = f'combined_transactions_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                combined_path = os.path.join(app.config['OUTPUT_FOLDER'], combined_name)
+                create_excel_file(all_transactions, combined_path)
+
+            with open(combined_path, 'rb') as f:
+                combined_bytes = f.read()
+            os.remove(combined_path)
+
             return jsonify({
                 'success': True,
                 'multiple': True,
                 'files': output_files,
-                'combined': combined_filename,
-                'zip': zip_filename,
-                'total_transactions': len(all_transactions),
-                'file_data': file_data  # Send file data directly
+                'combined_file': combined_name,
+                'combined_data': base64.b64encode(combined_bytes).decode(),
+                'total_transactions': len(all_transactions)
             })
         else:
-            # Single file
             return jsonify({
                 'success': True,
                 'multiple': False,
                 'file': output_files[0]['output'],
                 'transactions': output_files[0]['transactions'],
-                'file_data': file_data  # Send file data directly
+                'file_data': output_files[0]['file_data']
             })
-            
+
     except Exception as e:
         import traceback
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
-@app.route('/download/<filename>')
-def download(filename):
-    """Download converted file"""
-    try:
-        return send_from_directory(app.config['OUTPUT_FOLDER'], filename, as_attachment=True)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 404
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, port=5000)
