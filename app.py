@@ -535,5 +535,33 @@ def convert():
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 
+@app.route('/debug')
+def debug():
+    """Debug endpoint to check environment"""
+    import sys
+    info = {
+        'python': sys.version,
+        'env_has_api_key': bool(os.environ.get('ANTHROPIC_API_KEY')),
+        'api_key_prefix': os.environ.get('ANTHROPIC_API_KEY', '')[:8] + '...' if os.environ.get('ANTHROPIC_API_KEY') else 'NOT SET',
+    }
+    # Check libraries
+    try:
+        import fitz
+        info['pymupdf'] = fitz.__version__
+    except ImportError as e:
+        info['pymupdf'] = f'MISSING: {e}'
+    try:
+        import pypdfium2
+        info['pypdfium2'] = 'available'
+    except ImportError:
+        info['pypdfium2'] = 'not installed'
+    try:
+        import openpyxl
+        info['openpyxl'] = openpyxl.__version__
+    except ImportError as e:
+        info['openpyxl'] = f'MISSING: {e}'
+    return jsonify(info)
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
