@@ -535,6 +535,81 @@ def convert():
         return jsonify({'error': str(e), 'traceback': traceback.format_exc()}), 500
 
 
+@app.route('/test-vision', methods=['POST'])
+def test_vision():
+    """Test endpoint - upload a PDF and see exactly what happens"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'})
+    
+    file = request.files['file']
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    file.save(filepath)
+    
+    result = {'filename': file.filename, 'steps': []}
+    
+    # Step 1: Check if image-based
+    try:
+        doc = fitz.open(filepath)
+        page_texts = []
+        for i, page in enumerate(doc):
+            t = page.get_text()
+            page_texts.append(f"page{i}: {len(t)} chars")
+        result['steps'].append(f"fitz opened OK, pages: {page_texts}")
+        img_based = is_image_based_pdf(filepath)
+        result['steps'].append(f"is_image_based: {img_based}")
+    except Exception as e:
+        result['steps'].append(f"fitz ERROR: {e}")
+        os.remove(filepath)
+        return jsonify(result)
+    
+    if not img_based:
+        result['steps'].append("NOT image-based - would use text extraction")
+        os.remove(filepath)
+        return jsonify(result)
+    
+    # Step 2: Extract images
+    try:
+        imgs = get_page_images_b64(filepath)
+        result['steps'].append(f"extracted {len(imgs)} page images, sizes: {[len(i) for i in imgs]}")
+    except Exception as e:
+        result['steps'].append(f"image extraction ERROR: {e}")
+        os.remove(filepath)
+        return jsonify(result)
+    
+    # Step 3: Call vision API on first page only
+    try:
+        api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        content_msg = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": imgs[0]}},
+            {"type": "text", "text": "Extract all transaction rows from this bank statement page. Return JSON array only."}
+        ]
+        payload = json.dumps({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 4000,
+            "system": VISION_SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": content_msg}]
+        }).encode()
+        
+        req = urllib.request.Request(
+            'https://api.anthropic.com/v1/messages',
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'anthropic-version': '2023-06-01',
+                'x-api-key': api_key
+            }
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            api_result = json.loads(resp.read())
+            raw_text = api_result['content'][0]['text']
+            result['steps'].append(f"API call OK, raw response ({len(raw_text)} chars): {raw_text[:500]}")
+    except Exception as e:
+        result['steps'].append(f"API call ERROR: {type(e).__name__}: {e}")
+    
+    os.remove(filepath)
+    return jsonify(result)
+
+
 @app.route('/debug')
 def debug():
     """Debug endpoint to check environment"""
