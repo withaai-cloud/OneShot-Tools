@@ -177,12 +177,17 @@ def extract_via_vision(pdf_path):
             "messages": [{"role": "user", "content": content}]
         }).encode()
 
+        api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is not set. Add it in Vercel project settings.")
+
         req = urllib.request.Request(
             'https://api.anthropic.com/v1/messages',
             data=payload,
             headers={
                 'Content-Type': 'application/json',
-                'anthropic-version': '2023-06-01'
+                'anthropic-version': '2023-06-01',
+                'x-api-key': api_key
             }
         )
 
