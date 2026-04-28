@@ -409,6 +409,7 @@ def extract_transactions_from_pdf(filepath, invert_amounts=False):
 
     print(f"[INFO] fitz extracted {len(full_text)} chars from {filepath}", file=sys.stderr)
     print(f"[INFO] First 200 chars: {repr(full_text[:200])}", file=sys.stderr)
+    print(f"[INFO] FULL TEXT: {repr(full_text)}", file=sys.stderr)
 
     # Image-based PDF (no text layer) → use Claude vision
     if len(full_text.strip()) < 50:
