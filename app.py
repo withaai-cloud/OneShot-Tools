@@ -297,75 +297,116 @@ def parse_fnb_date(date_str):
         return f'{day}/{month}/{year}'
     return date_str
 
-def parse_sa_amount(s):
-    """Convert SA format '1 234,56' or '1234,56' to float"""
-    s = s.replace(' ', '').replace(',', '.')
-    return float(s)
+def parse_amount(s):
+    """Convert SA format '5 608.59' to float 5608.59"""
+    return float(s.replace(' ', ''))
 
 def extract_absa_transactions_text(text):
-    """Extract transactions from ABSA Tjekrekeningstaat (clean text version)"""
+    """Extract transactions from ABSA Tjekrekeningstaat — line-per-field format"""
+    lines = [l.strip() for l in text.split('\n')]
+
+    date_re = re.compile(r'^\d{1,2}/\d{1,2}/\d{4}$')
+    amount_re = re.compile(r'^\d{1,3}(?:\s\d{3})*\.\d{2}$')
+    type_codes = {'T', 'A', 'D', 'G', 'K', '*'}
+
+    exact_skip = {
+        'Saldo Oorgedra', 'Saldo oorgedra', 'Diverse Krediete', 'Diverse Debiete',
+        'Oortrekkingslimiet', 'Rekeningopsomming', 'U transaksies', 'Datum',
+        'Transaksiebeskrywing', 'Debietbedrag', 'Kredietbedrag', 'Koste', 'Saldo',
+        'Belastingfaktuur', 'Tjekrekeningstaat', 'Rekeningtipe:', 'Uitgereik op:',
+        'Staatnr:', 'Groeiende Besig Rek',
+    }
+    contains_skip = [
+        'DIENSGELD', 'KREDIETRENTE', 'ABSA BESIG', 'KOSTE :', 'BTW R',
+        'Bladsy ', 'Tjekreken', 'Registrasie', 'Gemagtigde', 'Absa Bank Beperk',
+        'CSP002', 'JFBK', 'BTW-reg', 'Stuur terug', 'Privaatsak',
+        'JURISFORUM', 'POSBUS', 'VRYHEID', 'Privaatheidskennisgewing',
+        'BESOEK', 'KONTAK', 'www.', 'http',
+    ]
+    debit_keywords = ['betaal dt', 'fooi', 'transaksie koste', 'admin koste',
+                      'mndelik', 'betaal bewys']
+    credit_keywords = ['betaal kt', 'acb krediet', 'acb debiet:ekst', 'deposito']
+
     transactions = []
-    lines = text.split('\n')
-
-    date_pattern = re.compile(r'^(\d{1,2}/\d{1,2}/\d{4})\s+(.*)')
-    # SA amount: digits, optional space-thousands, comma-decimal
-    amount_pattern = re.compile(r'\b(\d{1,3}(?:\s\d{3})*,\d{2})\b')
-
-    skip_keywords = ['Saldo Oorgedra', 'DIENSGELD', 'KREDIETRENTE',
-                     'ABSA BESIG', 'KOSTE :', 'Bladsy ', 'Datum',
-                     'Transaksiebeskrywing', 'Debietbedrag', 'Kredietbedrag']
-    debit_keywords = ['betaal dt', 'fooi', 'koste', 'admin', 'mndelik',
-                      'transaksie kost', 'diensgeld']
-    credit_keywords = ['betaal kt', 'krediet', 'acb krediet', 'deposito',
-                       'acb debiet:ekst']
-
     i = 0
+
+    # Skip to transaction section
     while i < len(lines):
-        line = lines[i].strip()
-        dm = date_pattern.match(line)
-        if dm:
-            date_str = dm.group(1)
-            parts = date_str.split('/')
+        if 'U transaksies' in lines[i]:
+            i += 1
+            break
+        i += 1
+
+    while i < len(lines):
+        line = lines[i]
+
+        if 'U transaksies (vervolg)' in line:
+            i += 1
+            continue
+
+        if date_re.match(line):
+            parts = line.split('/')
             date_str = f"{parts[0].zfill(2)}/{parts[1].zfill(2)}/{parts[2]}"
-            rest = dm.group(2)
+            i += 1
 
-            # Skip known non-transaction rows
-            if any(k.lower() in rest.lower() for k in skip_keywords):
+            block = []
+            while i < len(lines):
+                nl = lines[i]
+                if date_re.match(nl):
+                    break
+                if 'U transaksies' in nl or nl.startswith('DIENSGELD') or nl.startswith('KREDIETRENTE'):
+                    break
+                block.append(nl)
                 i += 1
+
+            if not block:
+                continue
+            if 'Saldo Oorgedra' in block[0] or 'Saldo oorgedra' in block[0]:
+                continue
+            if block[0] in ('Datum', 'Transaksiebeskrywing', 'Koste'):
                 continue
 
-            # Grab continuation sub-description line
-            if i + 1 < len(lines):
-                next_line = lines[i + 1].strip()
-                if next_line and not date_pattern.match(next_line):
-                    if not any(k in next_line for k in ['DIENSGELD', 'KREDIETRENTE', 'ABSA', '*', 'Bladsy', 'Registrasie']):
-                        rest = rest + ' ' + next_line
-                        i += 1
+            amounts = []
+            desc_parts = []
+            for bl in block:
+                if not bl:
+                    continue
+                if amount_re.match(bl):
+                    amounts.append(bl)
+                elif bl in type_codes:
+                    pass
+                elif bl in exact_skip:
+                    pass
+                elif any(cs in bl for cs in contains_skip):
+                    pass
+                else:
+                    desc_parts.append(bl)
 
-            amounts = amount_pattern.findall(rest)
-            if len(amounts) < 2:
-                i += 1
+            if not amounts:
                 continue
 
-            # Last amount is running balance, second-to-last is transaction
-            txn_amount = parse_sa_amount(amounts[-2])
+            if len(amounts) == 1:
+                desc_lower = ' '.join(desc_parts).lower()
+                if any(k in desc_lower for k in ['fooi', 'koste', 'admin', 'mndelik']):
+                    txn_amount = -abs(parse_amount(amounts[0]))
+                else:
+                    continue
+            else:
+                txn_amount = parse_amount(amounts[-2])
 
-            # Build clean description
-            desc = rest
-            for amt in amounts:
-                desc = desc.replace(amt, '')
-            desc = re.sub(r'\b[TDAGK]\b', '', desc)
-            desc = re.sub(r'\s+', ' ', desc).strip().strip('.,- ')
+            description = ' '.join(p for p in desc_parts if p).strip()
+            if not description:
+                continue
 
-            # Determine sign
-            desc_lower = desc.lower()
+            desc_lower = description.lower()
             if any(k in desc_lower for k in debit_keywords):
                 txn_amount = -abs(txn_amount)
             elif any(k in desc_lower for k in credit_keywords):
                 txn_amount = abs(txn_amount)
 
-            transactions.append((date_str, desc, txn_amount))
-        i += 1
+            transactions.append((date_str, description, txn_amount))
+        else:
+            i += 1
 
     return transactions
 
