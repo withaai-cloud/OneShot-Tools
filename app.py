@@ -192,16 +192,34 @@ def extract_via_vision(pdf_path):
         )
 
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read())
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                raw = resp.read()
+                result = json.loads(raw)
+                print(f"[VISION] API response keys: {list(result.keys())}", file=sys.stderr)
+                if 'error' in result:
+                    print(f"[VISION] API error: {result['error']}", file=sys.stderr)
+                    continue
                 text = result['content'][0]['text'].strip()
+                print(f"[VISION] Raw text ({len(text)} chars): {text[:300]}", file=sys.stderr)
                 # Strip any markdown fences if present
                 text = re.sub(r'^```(?:json)?\s*', '', text)
                 text = re.sub(r'\s*```$', '', text)
                 rows = json.loads(text)
+                print(f"[VISION] Parsed {len(rows)} rows", file=sys.stderr)
                 all_transactions.extend(rows)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            print(f"[VISION] HTTP {e.code} error: {body}", file=sys.stderr)
+            continue
+        except urllib.error.URLError as e:
+            print(f"[VISION] URL error: {e.reason}", file=sys.stderr)
+            continue
+        except json.JSONDecodeError as e:
+            print(f"[VISION] JSON parse error: {e} — text was: {text[:200]}", file=sys.stderr)
+            continue
         except Exception as e:
-            print(f"Vision API error: {e}", file=sys.stderr)
+            import traceback
+            print(f"[VISION] Unexpected error: {traceback.format_exc()}", file=sys.stderr)
             continue
 
     # Convert to standard internal format: (date_str, description, amount_float)
