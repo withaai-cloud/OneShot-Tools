@@ -400,14 +400,26 @@ def extract_absa_transactions_text(text):
             else:
                 txn_amount = parse_amount(amounts[-2])
 
-            description = ' '.join(p for p in desc_parts if p).strip()
+            desc_parts = [p for p in desc_parts if p]
+            if not desc_parts:
+                continue
+
+            # Use full desc for sign detection before trimming
+            full_desc = ' '.join(desc_parts).lower()
+
+            # Keep only the reference line (last part) if there are 3+ desc parts
+            # e.g. drop "Digitale Betaal Dt" + "Vereffenin", keep "Absa Bank Abaqulusi 98720"
+            if len(desc_parts) >= 3:
+                description = desc_parts[-1]
+            else:
+                description = ' '.join(desc_parts)
+
             if not description:
                 continue
 
-            desc_lower = description.lower()
-            if any(k in desc_lower for k in debit_keywords):
+            if any(k in full_desc for k in debit_keywords):
                 txn_amount = -abs(txn_amount)
-            elif any(k in desc_lower for k in credit_keywords):
+            elif any(k in full_desc for k in credit_keywords):
                 txn_amount = abs(txn_amount)
 
             transactions.append((date_str, description, txn_amount))
