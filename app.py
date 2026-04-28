@@ -297,47 +297,76 @@ def parse_fnb_date(date_str):
         return f'{day}/{month}/{year}'
     return date_str
 
+def parse_sa_amount(s):
+    """Convert SA format '1 234,56' or '1234,56' to float"""
+    s = s.replace(' ', '').replace(',', '.')
+    return float(s)
+
 def extract_absa_transactions_text(text):
-    """Extract transactions from old-style ABSA PDF text (encoded chars)"""
-    decoded = decode_absa_text(text)
+    """Extract transactions from ABSA Tjekrekeningstaat (clean text version)"""
     transactions = []
-    lines = decoded.split('\n')
-    date_pattern = re.compile(r'^\d{2}/\d{2}/\d{4}')
-    amount_pattern = re.compile(r'\d{1,3}(?:,\d{3})*\.\d{2}')
+    lines = text.split('\n')
+
+    date_pattern = re.compile(r'^(\d{1,2}/\d{1,2}/\d{4})\s+(.*)')
+    # SA amount: digits, optional space-thousands, comma-decimal
+    amount_pattern = re.compile(r'\b(\d{1,3}(?:\s\d{3})*,\d{2})\b')
+
+    skip_keywords = ['Saldo Oorgedra', 'DIENSGELD', 'KREDIETRENTE',
+                     'ABSA BESIG', 'KOSTE :', 'Bladsy ', 'Datum',
+                     'Transaksiebeskrywing', 'Debietbedrag', 'Kredietbedrag']
+    debit_keywords = ['betaal dt', 'fooi', 'koste', 'admin', 'mndelik',
+                      'transaksie kost', 'diensgeld']
+    credit_keywords = ['betaal kt', 'krediet', 'acb krediet', 'deposito',
+                       'acb debiet:ekst']
 
     i = 0
     while i < len(lines):
         line = lines[i].strip()
-        if not line:
-            i += 1
-            continue
-        date_match = date_pattern.match(line)
-        if date_match:
-            date_str = line[:10]
-            rest = line[10:].strip()
-            # Check next line for continuation
+        dm = date_pattern.match(line)
+        if dm:
+            date_str = dm.group(1)
+            parts = date_str.split('/')
+            date_str = f"{parts[0].zfill(2)}/{parts[1].zfill(2)}/{parts[2]}"
+            rest = dm.group(2)
+
+            # Skip known non-transaction rows
+            if any(k.lower() in rest.lower() for k in skip_keywords):
+                i += 1
+                continue
+
+            # Grab continuation sub-description line
             if i + 1 < len(lines):
                 next_line = lines[i + 1].strip()
                 if next_line and not date_pattern.match(next_line):
-                    rest = rest + ' ' + next_line
-                    i += 1
+                    if not any(k in next_line for k in ['DIENSGELD', 'KREDIETRENTE', 'ABSA', '*', 'Bladsy', 'Registrasie']):
+                        rest = rest + ' ' + next_line
+                        i += 1
+
             amounts = amount_pattern.findall(rest)
-            if amounts:
-                description = rest
-                for amt in amounts:
-                    description = description.replace(amt, '').strip()
-                description = apply_word_corrections(description)
-                description = re.sub(r'\s+', ' ', description).strip()
-                amount_val = amounts[-1].replace(',', '')
-                try:
-                    amount = float(amount_val)
-                    # If there's a debit indicator, make negative
-                    if re.search(r'\bD\b|\bdebit\b', rest, re.IGNORECASE):
-                        amount = -abs(amount)
-                    transactions.append((date_str, description, amount))
-                except ValueError:
-                    pass
+            if len(amounts) < 2:
+                i += 1
+                continue
+
+            # Last amount is running balance, second-to-last is transaction
+            txn_amount = parse_sa_amount(amounts[-2])
+
+            # Build clean description
+            desc = rest
+            for amt in amounts:
+                desc = desc.replace(amt, '')
+            desc = re.sub(r'\b[TDAGK]\b', '', desc)
+            desc = re.sub(r'\s+', ' ', desc).strip().strip('.,- ')
+
+            # Determine sign
+            desc_lower = desc.lower()
+            if any(k in desc_lower for k in debit_keywords):
+                txn_amount = -abs(txn_amount)
+            elif any(k in desc_lower for k in credit_keywords):
+                txn_amount = abs(txn_amount)
+
+            transactions.append((date_str, desc, txn_amount))
         i += 1
+
     return transactions
 
 def extract_standard_bank_transactions(text):
