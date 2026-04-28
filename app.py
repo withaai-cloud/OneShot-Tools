@@ -368,13 +368,14 @@ def extract_absa_transactions_text(text):
 
             amounts = []
             desc_parts = []
+            has_type_code = False
             for bl in block:
                 if not bl:
                     continue
                 if amount_re.match(bl):
                     amounts.append(bl)
                 elif bl in type_codes:
-                    pass
+                    has_type_code = True
                 elif bl in exact_skip:
                     pass
                 elif any(cs in bl for cs in contains_skip):
@@ -383,6 +384,11 @@ def extract_absa_transactions_text(text):
                     desc_parts.append(bl)
 
             if not amounts:
+                continue
+
+            # Skip rows that only have Koste + Balance (no actual debit/credit amount)
+            # These are identified by: has type code AND only 2 amounts (koste + balance)
+            if has_type_code and len(amounts) == 2:
                 continue
 
             if len(amounts) == 1:
