@@ -654,6 +654,23 @@ def test_vision():
     return jsonify(result)
 
 
+@app.route('/dump-text', methods=['POST'])
+def dump_text():
+    """Dump full extracted text from uploaded PDF for debugging"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'})
+    file = request.files['file']
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
+    file.save(filepath)
+    doc = fitz.open(filepath)
+    pages = []
+    for i, page in enumerate(doc):
+        text = page.get_text()
+        pages.append({'page': i, 'chars': len(text), 'text': text})
+    os.remove(filepath)
+    return jsonify({'pages': pages})
+
+
 @app.route('/debug')
 def debug():
     """Debug endpoint to check environment"""
