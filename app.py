@@ -371,30 +371,27 @@ def extract_standard_bank_transactions(text):
 def extract_transactions_from_pdf(filepath, invert_amounts=False):
     """Main extraction function — detects PDF type and uses correct method"""
 
-    # ── Image-based PDF: use Claude vision ──
-    if is_image_based_pdf(filepath):
-        print(f"[INFO] Image-based PDF detected: {filepath}", file=sys.stderr)
+    # ── Detect PDF type ──
+    doc = fitz.open(filepath)
+    full_text = ''
+    for page in doc:
+        full_text += page.get_text()
+    doc.close()
+
+    print(f"[INFO] fitz extracted {len(full_text)} chars from {filepath}", file=sys.stderr)
+    print(f"[INFO] First 200 chars: {repr(full_text[:200])}", file=sys.stderr)
+
+    # Image-based PDF (no text layer) → use Claude vision
+    if len(full_text.strip()) < 50:
+        print(f"[INFO] Image-based PDF detected, using vision", file=sys.stderr)
         transactions = extract_via_vision(filepath)
         if invert_amounts:
             transactions = [(d, desc, -amt) for d, desc, amt in transactions]
         return transactions
 
-    # ── Text-based PDF: use pypdfium2 or fitz ──
-    try:
-        import pypdfium2 as pdfium
-        pdf = pdfium.PdfDocument(filepath)
-        full_text = ''
-        for page in pdf:
-            textpage = page.get_textpage()
-            full_text += textpage.get_text_range() + '\n'
-    except Exception:
-        doc = fitz.open(filepath)
-        full_text = ''
-        for page in doc:
-            full_text += page.get_text() + '\n'
-
+    # ── Text-based PDF ──
     bank = detect_bank(full_text)
-    print(f"[INFO] Detected bank: {bank}", file=sys.stderr)
+    print(f"[INFO] Text-based PDF, detected bank: {bank}", file=sys.stderr)
 
     if bank == 'ABSA':
         transactions = extract_absa_transactions_text(full_text)
