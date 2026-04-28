@@ -321,8 +321,10 @@ def extract_absa_transactions_text(text):
         'Bladsy ', 'Tjekreken', 'Registrasie', 'Gemagtigde', 'Absa Bank Beperk',
         'CSP002', 'JFBK', 'BTW-reg', 'Stuur terug', 'Privaatsak',
         'JURISFORUM', 'POSBUS', 'VRYHEID', 'Privaatheidskennisgewing',
-        'BESOEK', 'KONTAK', 'www.', 'http',
+        'BESOEK', 'KONTAK', 'www.', 'http', 'Ons Privaat',
     ]
+    # Account number pattern e.g. "10-0380-1108"
+    account_no_re = re.compile(r'^\d{2}-\d{4}-\d{4}$')
     debit_keywords = ['betaal dt', 'fooi', 'transaksie koste', 'admin koste',
                       'mndelik', 'betaal bewys']
     credit_keywords = ['betaal kt', 'acb krediet', 'acb debiet:ekst', 'deposito']
@@ -369,16 +371,21 @@ def extract_absa_transactions_text(text):
             amounts = []
             desc_parts = []
             has_type_code = False
+            has_fee_marker = False  # * marker = bank fee
             for bl in block:
                 if not bl:
                     continue
                 if amount_re.match(bl):
                     amounts.append(bl)
+                elif bl == '*':
+                    has_fee_marker = True
                 elif bl in type_codes:
                     has_type_code = True
                 elif bl in exact_skip:
                     pass
                 elif any(cs in bl for cs in contains_skip):
+                    pass
+                elif account_no_re.match(bl):
                     pass
                 else:
                     desc_parts.append(bl)
@@ -386,29 +393,60 @@ def extract_absa_transactions_text(text):
             if not amounts:
                 continue
 
-            # Skip rows that only have Koste + Balance (no actual debit/credit amount)
-            # These are identified by: has type code AND only 2 amounts (koste + balance)
-            if has_type_code and len(amounts) == 2:
-                continue
-
-            if len(amounts) == 1:
-                desc_lower = ' '.join(desc_parts).lower()
-                if any(k in desc_lower for k in ['fooi', 'koste', 'admin', 'mndelik']):
-                    txn_amount = -abs(parse_amount(amounts[0]))
-                else:
-                    continue
-            else:
-                txn_amount = parse_amount(amounts[-2])
-
             desc_parts = [p for p in desc_parts if p]
             if not desc_parts:
                 continue
 
-            # Use full desc for sign detection before trimming
-            full_desc = ' '.join(desc_parts).lower()
+            # Full description for sign detection (before trimming)
+            full_desc = ' '.join(desc_parts)
+            full_desc_lower = full_desc.lower()
 
-            # Keep only the reference line (last part) if there are 3+ desc parts
-            # e.g. drop "Digitale Betaal Dt" + "Vereffenin", keep "Absa Bank Abaqulusi 98720"
+            # ── Determine transaction amount and sign ──
+            #
+            # Case 1: Fee marker (*) + 2 amounts → bank charge (debit)
+            #   e.g. Mndeliks Rek-fooi * 160.00 91742.65
+            if has_fee_marker and len(amounts) == 2:
+                txn_amount = -abs(parse_amount(amounts[-2]))
+
+            # Case 2: Type code (T/A/D/G/K) + 3 amounts → koste + txn_amount + balance
+            #   e.g. Digitale Betaal Dt T 10.00 920.00 55271.05
+            elif has_type_code and len(amounts) == 3:
+                txn_amount = parse_amount(amounts[-2])
+                # Determine sign from description
+                if any(k in full_desc_lower for k in ['betaal dt', 'debiet', 'betaal bewys']):
+                    txn_amount = -abs(txn_amount)
+                elif any(k in full_desc_lower for k in ['betaal kt', 'krediet']):
+                    txn_amount = abs(txn_amount)
+                else:
+                    txn_amount = -abs(txn_amount)  # default debit for unknown type-coded rows
+
+            # Case 3: Type code + 2 amounts → koste + balance only, no txn amount → SKIP
+            elif has_type_code and len(amounts) == 2:
+                continue
+
+            # Case 4: No type code + 2 amounts → txn_amount + balance (no koste)
+            #   e.g. Acb Krediet 5608.59 47320.21  OR  Digitale Betaal Kt 34999.15 72565.94
+            elif not has_type_code and len(amounts) == 2:
+                txn_amount = parse_amount(amounts[-2])
+                if any(k in full_desc_lower for k in ['betaal kt', 'acb krediet', 'deposito']):
+                    txn_amount = abs(txn_amount)
+                elif any(k in full_desc_lower for k in ['betaal dt', 'acb debiet', 'debiet']):
+                    txn_amount = -abs(txn_amount)
+                else:
+                    txn_amount = abs(txn_amount)  # default positive if unknown
+
+            # Case 5: Type code + 4 amounts → koste + ??? — fallback
+            elif len(amounts) >= 2:
+                txn_amount = parse_amount(amounts[-2])
+                if any(k in full_desc_lower for k in ['betaal dt', 'debiet', 'fooi', 'koste', 'admin', 'mndelik']):
+                    txn_amount = -abs(txn_amount)
+                else:
+                    txn_amount = abs(txn_amount)
+
+            else:
+                continue
+
+            # Keep only the reference line (last part) if 3+ desc parts
             if len(desc_parts) >= 3:
                 description = desc_parts[-1]
             else:
@@ -416,11 +454,6 @@ def extract_absa_transactions_text(text):
 
             if not description:
                 continue
-
-            if any(k in full_desc for k in debit_keywords):
-                txn_amount = -abs(txn_amount)
-            elif any(k in full_desc for k in credit_keywords):
-                txn_amount = abs(txn_amount)
 
             transactions.append((date_str, description, txn_amount))
         else:
